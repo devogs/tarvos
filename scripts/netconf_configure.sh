@@ -53,9 +53,12 @@ config="<netconf-server xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-server\
   </listen>
 </netconf-server>"
 
-if echo "${config}" | sysrepocfg --edit -d startup -f xml -m ietf-netconf-server >&2; then
-    log "SSH listener on port ${NETCONF_PORT}, user admin enabled"
-else
-    log "ERROR: could not write ietf-netconf-server configuration"
-    exit 1
-fi
+# Sysrepo persists "running" separately from "startup", and the image already carries a
+# default running config from the build, so both datastores are updated.
+for datastore in startup running; do
+    if ! echo "${config}" | sysrepocfg --edit -d "${datastore}" -f xml -m ietf-netconf-server >&2; then
+        log "ERROR: could not write ietf-netconf-server configuration to ${datastore}"
+        exit 1
+    fi
+done
+log "SSH listener on port ${NETCONF_PORT}, user admin enabled"
