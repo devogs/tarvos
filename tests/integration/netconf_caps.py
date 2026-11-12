@@ -57,6 +57,7 @@ def main() -> int:
 def write_test(host: str, port: str, user: str, password: str) -> int:
     """Prove NACM lets the user write and YANG validation runs: add then remove a QoS entry."""
     qos_ns = "urn:tarvos:params:xml:ns:yang:tarvos-qos"
+    nc_ns = "urn:ietf:params:xml:ns:netconf:base:1.0"
     base = f'<qos xmlns="{qos_ns}"><interface{{op}}><name>eth9</name>{{body}}</interface></qos>'
     add = base.format(op="", body="<qdisc>fq-codel</qdisc>")
     remove = base.format(
@@ -72,13 +73,13 @@ def write_test(host: str, port: str, user: str, password: str) -> int:
         allow_agent=False,
         timeout=30,
     ) as session:
-        session.edit_config(target="running", config=f"<config>{add}</config>")
+        session.edit_config(target="running", config=f'<config xmlns="{nc_ns}">{add}</config>')
         data = session.get_config(
             source="running",
             filter=("subtree", '<qos xmlns="urn:tarvos:params:xml:ns:yang:tarvos-qos"/>'),
         ).xml
         ok = "eth9" in data
-        session.edit_config(target="running", config=f"<config>{remove}</config>")
+        session.edit_config(target="running", config=f'<config xmlns="{nc_ns}">{remove}</config>')
     print("write test:", "ok" if ok else "entry not visible after edit")
     return 0 if ok else 1
 
