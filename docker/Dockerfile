@@ -50,6 +50,17 @@ RUN git clone --depth 1 --branch "${NETOPEER2_VERSION}" https://github.com/CESNE
         -DGENERATE_HOSTKEY=OFF -DMERGE_LISTEN_CONFIG=ON \
     && cmake --build netopeer2/build -j"$(nproc)" && cmake --install netopeer2/build
 
+# NETCONF "system users" mode: with the local-users-supported feature of ietf-ssh-server off,
+# libnetconf2 accepts any SSH username and authenticates it through PAM (so through TACACS+),
+# instead of requiring every user to be listed in the Sysrepo config. The NETCONF session then
+# carries the real username (for NACM and logs). Must be done here: it cannot be changed while
+# Netopeer2 runs, and the install above leaves a user list that has to be emptied first.
+RUN printf '%s\n' '<netconf-server xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-server"/>' \
+        | sysrepocfg --import -d startup -f xml -m ietf-netconf-server \
+    && sysrepoctl -c ietf-ssh-server \
+        -d local-user-auth-publickey -d local-user-auth-password -d local-user-auth-none \
+        -d local-users-supported
+
 # Neither pam_tacplus nor libnss-ato is packaged in Debian bookworm.
 # The PAM module lands in /usr/local/lib/security/pam_tacplus.so.
 # gl_PREREQ_EXPLICIT_BZERO no longer exists in gnulib; it only matters for libcs
