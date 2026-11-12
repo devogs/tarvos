@@ -55,6 +55,7 @@ RUN git clone --depth 1 --branch "${NETOPEER2_VERSION}" https://github.com/CESNE
 # instead of requiring every user to be listed in the Sysrepo config. The NETCONF session then
 # carries the real username (for NACM and logs). Must be done here: it cannot be changed while
 # Netopeer2 runs, and the install above leaves a user list that has to be emptied first.
+# hadolint ignore=DL4006
 RUN printf '%s\n' '<netconf-server xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-server"/>' \
         | sysrepocfg --import -d startup -f xml -m ietf-netconf-server \
     && sysrepoctl -c ietf-ssh-server \
