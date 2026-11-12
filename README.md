@@ -1,8 +1,34 @@
-# tarvos
+<p align="center">
+  <img src="images/tarvos_project.jpeg" alt="Tarvos - containerized network OS, eBPF telemetry, BGP EVPN" width="100%">
+</p>
+
+<h1 align="center">Tarvos Network OS</h1>
+
+<p align="center">
+  <a href="https://github.com/devogs/tarvos/actions/workflows/ci-cd.yml"><img alt="CI/CD" src="https://github.com/devogs/tarvos/actions/workflows/ci-cd.yml/badge.svg?branch=main"></a>
+  <a href="https://hub.docker.com/r/matt13290/tarvos"><img alt="Docker image" src="https://img.shields.io/docker/v/matt13290/tarvos?sort=semver&label=docker%20hub&logo=docker"></a>
+  <a href="https://hub.docker.com/r/matt13290/tarvos"><img alt="Image size" src="https://img.shields.io/docker/image-size/matt13290/tarvos/latest"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/devogs/tarvos"></a>
+</p>
 
 Lightweight, open-source Network OS designed to bring carrier-grade BGP EVPN routing, SDN orchestration, and real-time kernel telemetry to any containerized network lab. Built to replace heavy proprietary virtual routers with a fast, standards-driven appliance.
 
 Debian bookworm-slim + FRRouting + Sysrepo/Netopeer2 (NETCONF) + OpenSSH, with TACACS+ AAA, rsyslog and the management interface in its own VRF.
+
+## Highlights
+
+- **Routing:** FRRouting (BGP, OSPF, IS-IS, BFD) ready for BGP EVPN labs.
+- **Model-driven management:** NETCONF through Sysrepo/Netopeer2, with YANG modules loaded dynamically from `/opt/tarvos/yangs`.
+- **AAA:** TACACS+ with ordered failover and a local break-glass `admin`.
+- **Isolated management plane:** `eth0` lives in VRF `mgmt` by default.
+- **Observability:** rsyslog to stdout, optional forwarding to remote collectors.
+- **Small and fast:** about 64 MB compressed, boots in under 10 s, uses about 35 MiB of RAM.
+
+## Get the image
+
+```bash
+docker pull matt13290/tarvos:latest      # or a pinned release, e.g. :v1.0.0
+```
 
 ## Quick start
 

@@ -65,8 +65,22 @@ done
 
 # Access control: Netopeer2's default NACM denies writes, so nothing could be configured.
 # Group "admin" (user admin) gets full access, except that the TACACS+ shared secret can
-# be written but never read back.
-nacm='<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm">
+# be written but never read back. That rule needs the tarvos-aaa module, which is only
+# present when the YANG directory is mounted, so it is added conditionally (otherwise the
+# whole NACM import fails on an unknown path).
+secret_rule=""
+if sysrepoctl -l 2>/dev/null | grep -qE '^tarvos-aaa[[:space:]]'; then
+    secret_rule='<rule>
+      <name>hide-tacacs-secret</name>
+      <module-name>tarvos-aaa</module-name>
+      <path xmlns:taaa="urn:tarvos:params:xml:ns:yang:tarvos-aaa">/taaa:aaa/taaa:tacacs/taaa:server/taaa:secret</path>
+      <access-operations>read</access-operations>
+      <action>deny</action>
+    </rule>'
+else
+    log "tarvos-aaa not installed: skipping the TACACS+ secret read-protection rule"
+fi
+nacm="<nacm xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-acm\">
   <enable-nacm>true</enable-nacm>
   <read-default>deny</read-default>
   <write-default>deny</write-default>
@@ -80,13 +94,7 @@ nacm='<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm">
   <rule-list>
     <name>admin-full-access</name>
     <group>admin</group>
-    <rule>
-      <name>hide-tacacs-secret</name>
-      <module-name>tarvos-aaa</module-name>
-      <path xmlns:taaa="urn:tarvos:params:xml:ns:yang:tarvos-aaa">/taaa:aaa/taaa:tacacs/taaa:server/taaa:secret</path>
-      <access-operations>read</access-operations>
-      <action>deny</action>
-    </rule>
+    ${secret_rule}
     <rule>
       <name>permit-all</name>
       <module-name>*</module-name>
@@ -94,7 +102,7 @@ nacm='<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm">
       <action>permit</action>
     </rule>
   </rule-list>
-</nacm>'
+</nacm>"
 for datastore in startup running; do
     if ! echo "${nacm}" | sysrepocfg --import -d "${datastore}" -f xml -m ietf-netconf-acm >&2; then
         log "ERROR: could not write NACM configuration to ${datastore}"
