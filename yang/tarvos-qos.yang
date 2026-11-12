@@ -1,0 +1,142 @@
+module tarvos-qos {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-qos";
+  prefix tqos;
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "Interface quality of service, translated by the backend daemon into Linux
+     tc commands (htb, fq_codel, prio, cake).
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-12 {
+    description
+      "Initial revision.";
+  }
+
+  typedef dscp {
+    type uint8 {
+      range "0..63";
+    }
+    description
+      "Differentiated Services Code Point.";
+  }
+
+  typedef qdisc-type {
+    type enumeration {
+      enum htb {
+        description
+          "Hierarchical token bucket shaping.";
+      }
+      enum prio {
+        description
+          "Strict priority queuing.";
+      }
+      enum fq-codel {
+        description
+          "Flow queue CoDel, for bufferbloat mitigation.";
+      }
+      enum cake {
+        description
+          "Common Applications Kept Enhanced.";
+      }
+    }
+    description
+      "Root queueing discipline.";
+  }
+
+  container qos {
+    description
+      "Quality of service configuration.";
+
+    list interface {
+      key "name";
+      description
+        "Per-interface QoS policy.";
+
+      leaf name {
+        type string {
+          length "1..15";
+          pattern '[^/\s]+';
+        }
+        description
+          "Linux interface name (at most 15 characters).";
+      }
+
+      leaf qdisc {
+        type qdisc-type;
+        mandatory true;
+        description
+          "Root queueing discipline.";
+      }
+
+      leaf bandwidth {
+        when "../qdisc = 'htb' or ../qdisc = 'cake'" {
+          description
+            "Only shapers take a bandwidth ceiling.";
+        }
+        type uint64 {
+          range "8..100000000";
+        }
+        units "kbit/s";
+        description
+          "Bandwidth ceiling of the interface.";
+      }
+
+      list class {
+        when "../qdisc = 'htb' or ../qdisc = 'prio'" {
+          description
+            "Classes exist only below htb and prio.";
+        }
+        key "id";
+        description
+          "Traffic class selected by DSCP marking.";
+
+        leaf id {
+          type uint16 {
+            range "1..4094";
+          }
+          description
+            "Class identifier.";
+        }
+
+        leaf-list dscp {
+          type dscp;
+          description
+            "DSCP markings mapped to this class.";
+        }
+
+        leaf priority {
+          type uint8 {
+            range "0..7";
+          }
+          default "4";
+          description
+            "Scheduling priority; 0 is the highest.";
+        }
+
+        leaf rate {
+          type uint64 {
+            range "8..100000000";
+          }
+          units "kbit/s";
+          description
+            "Guaranteed rate of the class (htb).";
+        }
+
+        leaf ceil {
+          type uint64 {
+            range "8..100000000";
+          }
+          units "kbit/s";
+          description
+            "Maximum rate of the class (htb); defaults to the interface bandwidth.";
+        }
+      }
+    }
+  }
+}

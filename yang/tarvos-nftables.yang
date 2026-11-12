@@ -1,0 +1,140 @@
+module tarvos-nftables {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-nftables";
+  prefix tnft;
+
+  import ietf-inet-types {
+    prefix inet;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "Control-plane policing (CoPP) and filtering rules for the Tarvos INPUT
+     chain, translated by the backend daemon into nftables commands.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-12 {
+    description
+      "Initial revision.";
+  }
+
+  typedef rule-action {
+    type enumeration {
+      enum accept {
+        description
+          "Accept matching packets.";
+      }
+      enum drop {
+        description
+          "Silently discard matching packets.";
+      }
+      enum rate-limit {
+        description
+          "Accept packets up to max-pps and drop the excess.";
+      }
+    }
+    description
+      "Action applied to packets matching a rule.";
+  }
+
+  container nftables {
+    description
+      "nftables configuration.";
+
+    container copp {
+      description
+        "Control-plane policing on the INPUT chain.";
+
+      leaf enabled {
+        type boolean;
+        default "true";
+        description
+          "Apply the CoPP rules to the kernel.";
+      }
+
+      list rule {
+        key "name";
+        ordered-by user;
+        description
+          "Ordered CoPP rule; the first match wins.";
+
+        leaf name {
+          type string {
+            length "1..64";
+            pattern '[A-Za-z0-9_.-]+';
+          }
+          description
+            "Rule identifier.";
+        }
+
+        leaf protocol {
+          type enumeration {
+            enum tcp;
+            enum udp;
+            enum icmp;
+            enum icmpv6;
+            enum ospf;
+            enum vrrp;
+          }
+          mandatory true;
+          description
+            "IP protocol to match.";
+        }
+
+        leaf source-prefix {
+          type inet:ip-prefix;
+          description
+            "Source prefix to match; any source when absent.";
+        }
+
+        leaf destination-port {
+          when "../protocol = 'tcp' or ../protocol = 'udp'" {
+            description
+              "Ports exist only for TCP and UDP.";
+          }
+          type inet:port-number;
+          description
+            "Destination port to match (for example 179 for BGP).";
+        }
+
+        leaf action {
+          type rule-action;
+          default "accept";
+          description
+            "Action applied to matching packets.";
+        }
+
+        leaf max-pps {
+          when "../action = 'rate-limit'" {
+            description
+              "A rate applies only to rate-limit rules.";
+          }
+          type uint32 {
+            range "1..10000000";
+          }
+          units "packets/second";
+          mandatory true;
+          description
+            "Maximum packet rate accepted for this rule.";
+        }
+
+        leaf burst {
+          when "../action = 'rate-limit'" {
+            description
+              "A burst applies only to rate-limit rules.";
+          }
+          type uint32 {
+            range "1..1000000";
+          }
+          units "packets";
+          description
+            "Burst allowance; the backend picks a default when absent.";
+        }
+      }
+    }
+  }
+}
