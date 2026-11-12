@@ -13,6 +13,8 @@ ARG NETOPEER2_VERSION=v2.2.31
 ARG SYSREPO_PY_VERSION=1.7.6
 ARG LIBYANG_PY_VERSION=2.8.4
 ARG PYROUTE2_VERSION=0.7.12
+ARG PAM_TACPLUS_VERSION=v1.7.0
+ARG LIBNSS_ATO_VERSION=v0.2.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SYSREPO_REPOSITORY_PATH=/var/lib/sysrepo \
@@ -24,6 +26,7 @@ RUN apt-get update \
         build-essential cmake git ca-certificates pkg-config \
         libpcre2-dev libssl-dev libssh-dev libpam0g-dev libcurl4-openssl-dev \
         python3 python3-dev python3-venv libffi-dev \
+        autoconf automake libtool \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -47,6 +50,18 @@ RUN git clone --depth 1 --branch "${NETOPEER2_VERSION}" https://github.com/CESNE
         -DGENERATE_HOSTKEY=OFF -DMERGE_LISTEN_CONFIG=ON \
     && cmake --build netopeer2/build -j"$(nproc)" && cmake --install netopeer2/build
 
+# Neither pam_tacplus nor libnss-ato is packaged in Debian bookworm.
+# The PAM module lands in /usr/local/lib/security/pam_tacplus.so.
+# hadolint ignore=DL3003
+RUN git clone --depth 1 --branch "${PAM_TACPLUS_VERSION}" https://github.com/kravietz/pam_tacplus.git \
+    && cd pam_tacplus && autoreconf -fi \
+    && ./configure --prefix=/usr/local --disable-doc --disable-werror \
+    && make -j"$(nproc)" && make install && ldconfig
+
+RUN git clone --depth 1 --branch "${LIBNSS_ATO_VERSION}" https://github.com/donapieppo/libnss-ato.git \
+    && make -C libnss-ato libnss_ato \
+    && install -D libnss-ato/libnss_ato.so.2 /usr/local/lib/libnss_ato.so.2 && ldconfig
+
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir \
         "libyang==${LIBYANG_PY_VERSION}" "sysrepo==${SYSREPO_PY_VERSION}" \
@@ -65,7 +80,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tini frr openssh-server libpam-tacplus libnss-ato libpam-modules \
+        tini frr openssh-server libpam-modules \
         nftables iproute2 python3 \
         libpcre2-8-0 libssl3 libssh-4 libpam0g libcurl4 \
         procps ca-certificates \

@@ -24,6 +24,8 @@ TACACS_USER = "tacacs"
 TACACS_UID = 1001
 TACACS_GID = 1001
 MAX_SERVERS = 4
+# Built from source (not packaged in bookworm), so referenced by absolute path.
+PAM_TACPLUS_MODULE = "/usr/local/lib/security/pam_tacplus.so"
 
 _SECRET_RE = re.compile(r"^[\x21-\x7e]{1,128}$")  # printable ASCII, no whitespace
 _LOG_LEVELS = {"debug": "DEBUG", "info": "INFO", "warning": "INFO", "error": "ERROR"}
@@ -128,7 +130,7 @@ def render_pam(settings: AaaSettings, *, with_session: bool) -> str:
     if settings.tacacs_enabled:
         servers = " ".join(f"server={s}" for s in settings.servers)
         tac = (
-            f"pam_tacplus.so {servers} secret={settings.secret} "
+            f"{PAM_TACPLUS_MODULE} {servers} secret={settings.secret} "
             f"timeout={settings.timeout} service=shell protocol=ssh login=pap encrypt"
         )
         lines += [
