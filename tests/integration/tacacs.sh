@@ -15,6 +15,10 @@ NETCONF_HOST_PORT="${NETCONF_HOST_PORT:-8301}"
 # shellcheck disable=SC2054 # the comma is part of an ssh option value
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
     -o PreferredAuthentications=password,keyboard-interactive -o ConnectTimeout=20)
+# NETCONF: only keyboard-interactive goes through PAM (and so TACACS+); the "password" method
+# is checked against the local shadow file.
+NETCONF_SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+    -o PreferredAuthentications=keyboard-interactive -o ConnectTimeout=20)
 WORKDIR="$(mktemp -d)"
 TAC_PID=""
 
@@ -55,7 +59,7 @@ netconf_rpcs() { # user password -> raw NETCONF replies for <hello>, get-config 
         sleep 1
         printf '<rpc message-id="2" %s><edit-config><target><running/></target><config><nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm"><enable-external-groups>true</enable-external-groups></nacm></config></edit-config></rpc>]]>]]>\n' "${ns}"
         sleep 2
-    } | timeout 20 sshpass -p "$2" ssh "${SSH_OPTS[@]}" -p "${NETCONF_HOST_PORT}" -s "$1@127.0.0.1" netconf 2>/dev/null || true
+    } | timeout 20 sshpass -p "$2" ssh "${NETCONF_SSH_OPTS[@]}" -p "${NETCONF_HOST_PORT}" -s "$1@127.0.0.1" netconf 2>/dev/null || true
 }
 
 # admin skips TACACS+, so it is the readiness probe
