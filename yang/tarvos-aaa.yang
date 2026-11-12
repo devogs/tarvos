@@ -1,0 +1,101 @@
+module tarvos-aaa {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-aaa";
+  prefix taaa;
+
+  import ietf-inet-types {
+    prefix inet;
+  }
+  import ietf-netconf-acm {
+    prefix nacm;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "Runtime AAA overrides for TACACS+ on top of the .env bootstrap defaults.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-12 {
+    description
+      "Initial revision.";
+  }
+
+  container aaa {
+    description
+      "Authentication, authorization and accounting.";
+
+    container tacacs {
+      description
+        "TACACS+ client settings.";
+
+      leaf timeout {
+        type uint8 {
+          range "1..30";
+        }
+        units "seconds";
+        default "3";
+        description
+          "Time to wait for a server before failing over to the next one.";
+      }
+
+      list server {
+        key "address";
+        max-elements 4;
+        ordered-by user;
+        description
+          "TACACS+ servers in failover order; the first entry is the primary.";
+
+        leaf address {
+          type inet:ip-address;
+          description
+            "Server IP address.";
+        }
+
+        leaf secret {
+          nacm:default-deny-all;
+          type string {
+            length "1..128";
+            pattern '[!-~]+';
+          }
+          mandatory true;
+          description
+            "Shared secret. Never readable through NETCONF.";
+        }
+      }
+    }
+
+    container local-fallback {
+      description
+        "Local account used when TACACS+ is unreachable or unconfigured.";
+
+      leaf enabled {
+        type boolean;
+        default "true";
+        description
+          "Allow the local admin account to authenticate.";
+      }
+    }
+
+    container state {
+      config false;
+      description
+        "Operational AAA state.";
+
+      leaf tacacs-active {
+        type boolean;
+        description
+          "True when TACACS+ authentication is currently configured.";
+      }
+
+      leaf active-servers {
+        type uint8;
+        description
+          "Number of configured TACACS+ servers.";
+      }
+    }
+  }
+}

@@ -1,0 +1,128 @@
+name: ci-cd
+
+# Git Flow: feature -> qa (test + baseline metrics) -> main (publish to Docker Hub)
+# Note: branch names are case-sensitive; the remote branch is lowercase "qa".
+on:
+  pull_request:
+    branches: [qa, main]
+  push:
+    branches: [qa, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: tarvos
+  LOCAL_TAG: tarvos:ci
+
+jobs:
+  lint:
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lint tooling
+        run: pip install --no-cache-dir ruff==0.8.4 pyang==2.6.1 pytest==8.3.4 "setuptools<81"
+
+      - name: ruff
+        run: ruff check scripts tests daemons
+
+      - name: shellcheck
+        run: shellcheck scripts/*.sh tests/integration/*.sh
+
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/Dockerfile
+
+      - name: pyang
+        run: pyang --strict --canonical -p yang yang/*.yang
+
+      - name: Unit tests
+        run: pytest -q tests
+
+  build-test:
+    name: Build, integration test, metrics
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          tags: ${{ env.LOCAL_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.LOCAL_TAG }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Integration tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends sshpass
+          tests/integration/smoke.sh "$LOCAL_TAG"
+
+      - name: Baseline metrics (informational, no caps)
+        if: always()
+        run: |
+          {
+            echo "### Tarvos baseline metrics"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            size=$(docker image inspect "$LOCAL_TAG" --format '{{.Size}}' 2>/dev/null || echo 0)
+            echo "| Image size | $((size / 1024 / 1024)) MiB |"
+            if [ -f metrics.env ]; then
+              # shellcheck disable=SC1091
+              . ./metrics.env
+              echo "| Boot time to NETCONF ready | ${BOOT_SECONDS:-n/a} s |"
+              echo "| Container RAM (steady state) | ${MEM_USAGE:-n/a} |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish to Docker Hub
+    runs-on: ubuntu-24.04
+    needs: [lint, build-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha

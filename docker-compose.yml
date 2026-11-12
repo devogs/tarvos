@@ -1,0 +1,33 @@
+services:
+  tarvos:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tarvos:dev
+    container_name: tarvos
+    hostname: tarvos
+    env_file:
+      - .env
+    volumes:
+      - ./yang:/opt/tarvos/yangs:ro
+    ports:
+      - "2222:22"
+      - "8300:830"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      # sshd privilege separation, PAM and FRR's user switch
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SYS_CHROOT
+      - AUDIT_WRITE
+      - NET_BIND_SERVICE
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    restart: unless-stopped
