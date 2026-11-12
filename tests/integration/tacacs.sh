@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# TACACS+ end-to-end test against a real tac_plus server running on the host:
+# TACACS+ end-to-end test against a TACACS+ test server running on the host:
 #   - failover: first configured server is unreachable, second answers
 #   - a TACACS+-only user (alice) can log in over SSH, a wrong password cannot
 #   - the local break-glass account (admin) still works
-# Usage: tests/integration/tacacs.sh <image>   (needs tac_plus, sshpass, docker)
+# Usage: tests/integration/tacacs.sh <image>   (needs python3, sshpass, docker, sudo)
 set -euo pipefail
 
 IMAGE="${1:?usage: tacacs.sh <image>}"
@@ -27,16 +27,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 gateway="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
 
-cat >"${WORKDIR}/tac_plus.conf" <<CONF
-key = testkey
-user = alice {
-    login = cleartext "alicepw"
-    default service = permit
-}
-CONF
-
-sudo pkill tac_plus 2>/dev/null || true
-sudo tac_plus -C "${WORKDIR}/tac_plus.conf" -G -p 49 &
+# Minimal TACACS+ server (tests/integration/tacacs_server.py); port 49 needs root.
+sudo python3 "$(dirname "$0")/tacacs_server.py" --key testkey --port 49 --user alice:alicepw &
 TAC_PID=$!
 sleep 2
 
