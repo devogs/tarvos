@@ -28,9 +28,12 @@ docker run -d --name "${NAME}" \
     "${IMAGE}" >/dev/null
 
 netconf_hello() {
-    printf '%s\n]]>]]>\n' \
-        '<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><capabilities><capability>urn:ietf:params:netconf:base:1.0</capability></capabilities></hello>' |
-        timeout 5 sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${NETCONF_HOST_PORT}" -s admin@127.0.0.1 netconf 2>/dev/null || true
+    # Keep stdin open briefly: closing it early makes ssh drop the channel mid-<hello>.
+    {
+        printf '%s\n]]>]]>\n' \
+            '<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><capabilities><capability>urn:ietf:params:netconf:base:1.0</capability></capabilities></hello>'
+        sleep 3
+    } | timeout 8 sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${NETCONF_HOST_PORT}" -s admin@127.0.0.1 netconf 2>/dev/null || true
 }
 
 # Wait for NETCONF (the last management daemon to come up): the server's <hello> is the probe.
