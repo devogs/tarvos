@@ -21,7 +21,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 start=$(date +%s)
 docker run -d --name "${NAME}" \
-    --cap-add NET_ADMIN --cap-add NET_RAW \
+    --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN \
     --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
     -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" \
     -v "${YANG_SRC}:/opt/tarvos/yangs:ro" \
@@ -51,16 +51,12 @@ echo "== SSH login with admin/admin"
 out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0.1 'echo tarvos-ok')"
 [ "${out}" = "tarvos-ok" ] || fail "SSH login returned: ${out}"
 
-echo "== NETCONF <hello> advertises tarvos modules"
-for module in tarvos-nftables tarvos-qos tarvos-aaa; do
-    if ! grep -q "urn:tarvos:params:xml:ns:yang:${module}" <<<"${hello}"; then
-        echo "--- server hello:" >&2
-        echo "${hello}" | sed 's/<capability>/\n/g' | cut -c1-160 | head -60 >&2
-        echo "--- sysrepoctl -l:" >&2
-        docker exec "${NAME}" sysrepoctl -l >&2 || true
-        fail "${module} not advertised"
-    fi
-done
+echo "== NETCONF capabilities advertise tarvos modules (ncclient)"
+python3 "$(dirname "$0")/netconf_caps.py" 127.0.0.1 "${NETCONF_HOST_PORT}" admin admin \
+    tarvos-nftables tarvos-qos tarvos-aaa || {
+    docker exec "${NAME}" sysrepoctl -l >&2 || true
+    fail "tarvos modules not advertised over NETCONF"
+}
 
 echo "== eth0 in VRF mgmt (informational: depends on host kernel VRF support)"
 if docker exec "${NAME}" ip -o link show eth0 | grep -q 'master mgmt '; then

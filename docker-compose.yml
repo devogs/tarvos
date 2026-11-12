@@ -18,6 +18,8 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      # FRR zebra/bgpd need it for VRF and netns handling
+      - SYS_ADMIN
       # sshd privilege separation, PAM and FRR's user switch
       - CHOWN
       - SETUID
