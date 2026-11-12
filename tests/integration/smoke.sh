@@ -27,17 +27,21 @@ docker run -d --name "${NAME}" \
     -v "${YANG_SRC}:/opt/tarvos/yangs:ro" \
     "${IMAGE}" >/dev/null
 
-# Wait for NETCONF (the last management daemon to come up).
-ready=0
-for _ in $(seq 1 90); do
-    if sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${NETCONF_HOST_PORT}" -s admin@127.0.0.1 netconf \
-        </dev/null >/dev/null 2>&1; then
-        ready=1
-        break
-    fi
+netconf_hello() {
+    printf '%s\n]]>]]>\n' \
+        '<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><capabilities><capability>urn:ietf:params:netconf:base:1.0</capability></capabilities></hello>' |
+        timeout 5 sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${NETCONF_HOST_PORT}" -s admin@127.0.0.1 netconf 2>/dev/null || true
+}
+
+# Wait for NETCONF (the last management daemon to come up): the server's <hello> is the probe.
+hello=""
+for _ in $(seq 1 60); do
+    hello="$(netconf_hello)"
+    grep -q 'urn:ietf:params:netconf:base' <<<"${hello}" && break
+    hello=""
     sleep 1
 done
-[ "${ready}" -eq 1 ] || fail "NETCONF did not become ready"
+[ -n "${hello}" ] || fail "NETCONF did not become ready"
 boot_seconds=$(($(date +%s) - start))
 
 echo "== SSH login with admin/admin"
@@ -45,9 +49,6 @@ out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0
 [ "${out}" = "tarvos-ok" ] || fail "SSH login returned: ${out}"
 
 echo "== NETCONF <hello> advertises tarvos modules"
-hello="$(printf '%s\n]]>]]>\n' \
-    '<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0"><capabilities><capability>urn:ietf:params:netconf:base:1.0</capability></capabilities></hello>' |
-    timeout 10 sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${NETCONF_HOST_PORT}" -s admin@127.0.0.1 netconf 2>/dev/null || true)"
 for module in tarvos-nftables tarvos-qos tarvos-aaa; do
     grep -q "urn:tarvos:params:xml:ns:yang:${module}" <<<"${hello}" || fail "${module} not advertised"
 done
