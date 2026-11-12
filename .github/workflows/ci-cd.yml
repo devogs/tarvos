@@ -2,11 +2,14 @@ name: ci-cd
 
 # Git Flow: feature -> qa (test + baseline metrics) -> main (publish to Docker Hub)
 # Note: branch names are case-sensitive; the remote branch is lowercase "qa".
+# Docs-only changes do not need a container build (saves Actions minutes).
 on:
   pull_request:
     branches: [qa, main]
+    paths-ignore: ["**.md", ".claude/**", "images/**", "LICENSE", ".gitignore"]
   push:
     branches: [qa, main]
+    paths-ignore: ["**.md", ".claude/**", "images/**", "LICENSE", ".gitignore"]
 
 permissions:
   contents: read
@@ -77,12 +80,22 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
+      - name: Report HIGH vulnerabilities (informational)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.LOCAL_TAG }}
+          severity: HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
       - name: Integration tests
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends sshpass
           pip install --user --break-system-packages --no-cache-dir ncclient==0.6.15
           tests/integration/smoke.sh "$LOCAL_TAG"
+          sudo apt-get install -y --no-install-recommends tacacs+
+          tests/integration/tacacs.sh "$LOCAL_TAG"
 
       - name: Baseline metrics (informational, no caps)
         if: always()

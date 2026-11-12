@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Configure the Netopeer2 SSH listener and allowed NETCONF users in the Sysrepo startup
-# datastore. Must run BEFORE netopeer2-server starts. Idempotent (merge semantics).
+# datastore. Must run BEFORE netopeer2-server starts. Idempotent (full replace).
 #
 # Netopeer2 only lets users listed in ietf-netconf-server log in. "admin" is listed with
 # keyboard-interactive/use-system-auth, so authentication goes through /etc/pam.d/netopeer2
@@ -53,10 +53,11 @@ config="<netconf-server xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-server\
   </listen>
 </netconf-server>"
 
-# Sysrepo persists "running" separately from "startup", and the image already carries a
-# default running config from the build, so both datastores are updated.
+# The whole ietf-netconf-server config is REPLACED (not merged): the build-time install of
+# Netopeer2 leaves a default listener and a user for whoever ran it (root), which must not
+# survive. Sysrepo persists "running" separately from "startup", so both are written.
 for datastore in startup running; do
-    if ! echo "${config}" | sysrepocfg --edit -d "${datastore}" -f xml -m ietf-netconf-server >&2; then
+    if ! echo "${config}" | sysrepocfg --import -d "${datastore}" -f xml -m ietf-netconf-server >&2; then
         log "ERROR: could not write ietf-netconf-server configuration to ${datastore}"
         exit 1
     fi
