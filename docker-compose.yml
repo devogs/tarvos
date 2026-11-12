@@ -30,4 +30,7 @@ services:
       - NET_BIND_SERVICE
     sysctls:
       net.ipv4.ip_forward: "1"
+      # sshd/netopeer2 are not VRF-aware; let them accept connections from the mgmt VRF
+      net.ipv4.tcp_l3mdev_accept: "1"
+      net.ipv4.udp_l3mdev_accept: "1"
     restart: unless-stopped

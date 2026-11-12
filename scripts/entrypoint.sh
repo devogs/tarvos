@@ -44,6 +44,9 @@ stop_all() {
 }
 trap 'stop_all; exit 0' SIGTERM SIGINT
 
+# --- 0. Management VRF (eth0 -> vrf mgmt); never fatal ----------------------------
+"${SCRIPTS_DIR}/mgmt_vrf.sh" || log "WARNING: management VRF setup failed"
+
 # --- 1. AAA: admin account, PAM, NSS, sshd config --------------------------------
 python3 "${SCRIPTS_DIR}/aaa_configure.py" || { log "AAA configuration failed"; exit 1; }
 

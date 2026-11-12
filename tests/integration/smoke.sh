@@ -22,6 +22,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 start=$(date +%s)
 docker run -d --name "${NAME}" \
     --cap-add NET_ADMIN --cap-add NET_RAW \
+    --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
     -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" \
     -v "${YANG_SRC}:/opt/tarvos/yangs:ro" \
     "${IMAGE}" >/dev/null
@@ -50,6 +51,13 @@ hello="$(printf '%s\n]]>]]>\n' \
 for module in tarvos-nftables tarvos-qos tarvos-aaa; do
     grep -q "urn:tarvos:params:xml:ns:yang:${module}" <<<"${hello}" || fail "${module} not advertised"
 done
+
+echo "== eth0 in VRF mgmt (informational: depends on host kernel VRF support)"
+if docker exec "${NAME}" ip -o link show eth0 | grep -q 'master mgmt '; then
+    echo "eth0 is in VRF mgmt"
+else
+    echo "WARNING: eth0 is not in VRF mgmt on this host" >&2
+fi
 
 echo "== FRR health"
 docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting' || fail "vtysh failed"
