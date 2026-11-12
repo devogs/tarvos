@@ -52,7 +52,7 @@ echo "== NETCONF <hello> advertises tarvos modules"
 for module in tarvos-nftables tarvos-qos tarvos-aaa; do
     if ! grep -q "urn:tarvos:params:xml:ns:yang:${module}" <<<"${hello}"; then
         echo "--- server hello:" >&2
-        echo "${hello}" | tr '>' '>\n' | grep -i -E 'capability' | head -60 >&2
+        echo "${hello}" | sed 's/<capability>/\n/g' | cut -c1-160 | head -60 >&2
         echo "--- sysrepoctl -l:" >&2
         docker exec "${NAME}" sysrepoctl -l >&2 || true
         fail "${module} not advertised"
