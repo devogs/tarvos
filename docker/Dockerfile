@@ -26,7 +26,7 @@ RUN apt-get update \
         build-essential cmake git ca-certificates pkg-config \
         libpcre2-dev libssl-dev libssh-dev libpam0g-dev libcurl4-openssl-dev \
         python3 python3-dev python3-venv libffi-dev \
-        autoconf automake libtool \
+        autoconf automake libtool gnulib \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -54,7 +54,10 @@ RUN git clone --depth 1 --branch "${NETOPEER2_VERSION}" https://github.com/CESNE
 # The PAM module lands in /usr/local/lib/security/pam_tacplus.so.
 # hadolint ignore=DL3003
 RUN git clone --depth 1 --branch "${PAM_TACPLUS_VERSION}" https://github.com/kravietz/pam_tacplus.git \
-    && cd pam_tacplus && autoreconf -fi \
+    && cd pam_tacplus \
+    && gnulib-tool --makefile-name=Makefile.gnulib --libtool --import \
+        fcntl crypto/md5 array-list list xlist getrandom realloc-posix explicit_bzero xalloc getopt-gnu \
+    && autoreconf -fi \
     && ./configure --prefix=/usr/local --disable-doc --disable-werror \
     && make -j"$(nproc)" && make install && ldconfig
 
