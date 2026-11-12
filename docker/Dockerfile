@@ -52,11 +52,14 @@ RUN git clone --depth 1 --branch "${NETOPEER2_VERSION}" https://github.com/CESNE
 
 # Neither pam_tacplus nor libnss-ato is packaged in Debian bookworm.
 # The PAM module lands in /usr/local/lib/security/pam_tacplus.so.
+# gl_PREREQ_EXPLICIT_BZERO no longer exists in gnulib; it only matters for libcs
+# without explicit_bzero, and glibc has it.
 # hadolint ignore=DL3003
 RUN git clone --depth 1 --branch "${PAM_TACPLUS_VERSION}" https://github.com/kravietz/pam_tacplus.git \
     && cd pam_tacplus \
     && gnulib-tool --makefile-name=Makefile.gnulib --libtool --import \
         fcntl crypto/md5 array-list list xlist getrandom realloc-posix explicit_bzero xalloc getopt-gnu \
+    && sed -i '/gl_PREREQ_EXPLICIT_BZERO/d' configure.ac \
     && autoreconf -fi \
     && ./configure --prefix=/usr/local --disable-doc --disable-werror \
     && make -j"$(nproc)" && make install && ldconfig
