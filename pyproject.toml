@@ -10,5 +10,5 @@ select = ["E", "F", "I", "B", "S", "UP"]
 "scripts/aaa_configure.py" = ["S603", "S607"]
 
 [tool.pytest.ini_options]
-pythonpath = ["scripts"]
+pythonpath = ["scripts", "tests/integration"]
 testpaths = ["tests"]

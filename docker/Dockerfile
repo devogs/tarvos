@@ -71,7 +71,8 @@ RUN git clone --depth 1 --branch "${LIBNSS_ATO_VERSION}" https://github.com/dona
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir \
         "libyang==${LIBYANG_PY_VERSION}" "sysrepo==${SYSREPO_PY_VERSION}" \
-        "pyroute2==${PYROUTE2_VERSION}"
+        "pyroute2==${PYROUTE2_VERSION}" \
+    && /opt/venv/bin/pip uninstall -y pip setuptools
 
 # ---------------------------------------------------------------------------
 # Runtime

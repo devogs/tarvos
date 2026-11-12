@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Configure the Netopeer2 SSH listener and allowed NETCONF users in the Sysrepo startup
-# datastore. Must run BEFORE netopeer2-server starts. Idempotent (merge semantics).
+# Configure the Netopeer2 SSH listener, allowed NETCONF users and NACM in the Sysrepo
+# startup and running datastores. Must run BEFORE netopeer2-server starts. Idempotent (full replace).
 #
 # Netopeer2 only lets users listed in ietf-netconf-server log in. "admin" is listed with
 # keyboard-interactive/use-system-auth, so authentication goes through /etc/pam.d/netopeer2
@@ -53,12 +53,53 @@ config="<netconf-server xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-server\
   </listen>
 </netconf-server>"
 
-# Sysrepo persists "running" separately from "startup", and the image already carries a
-# default running config from the build, so both datastores are updated.
+# The whole ietf-netconf-server config is REPLACED (not merged): the build-time install of
+# Netopeer2 leaves a default listener and a user for whoever ran it (root), which must not
+# survive. Sysrepo persists "running" separately from "startup", so both are written.
 for datastore in startup running; do
-    if ! echo "${config}" | sysrepocfg --edit -d "${datastore}" -f xml -m ietf-netconf-server >&2; then
+    if ! echo "${config}" | sysrepocfg --import -d "${datastore}" -f xml -m ietf-netconf-server >&2; then
         log "ERROR: could not write ietf-netconf-server configuration to ${datastore}"
         exit 1
     fi
 done
-log "SSH listener on port ${NETCONF_PORT}, user admin enabled"
+
+# Access control: Netopeer2's default NACM denies writes, so nothing could be configured.
+# Group "admin" (user admin) gets full access, except that the TACACS+ shared secret can
+# be written but never read back.
+nacm='<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm">
+  <enable-nacm>true</enable-nacm>
+  <read-default>deny</read-default>
+  <write-default>deny</write-default>
+  <exec-default>deny</exec-default>
+  <groups>
+    <group>
+      <name>admin</name>
+      <user-name>admin</user-name>
+    </group>
+  </groups>
+  <rule-list>
+    <name>admin-full-access</name>
+    <group>admin</group>
+    <rule>
+      <name>hide-tacacs-secret</name>
+      <module-name>tarvos-aaa</module-name>
+      <path xmlns:taaa="urn:tarvos:params:xml:ns:yang:tarvos-aaa">/taaa:aaa/taaa:tacacs/taaa:server/taaa:secret</path>
+      <access-operations>read</access-operations>
+      <action>deny</action>
+    </rule>
+    <rule>
+      <name>permit-all</name>
+      <module-name>*</module-name>
+      <access-operations>*</access-operations>
+      <action>permit</action>
+    </rule>
+  </rule-list>
+</nacm>'
+for datastore in startup running; do
+    if ! echo "${nacm}" | sysrepocfg --import -d "${datastore}" -f xml -m ietf-netconf-acm >&2; then
+        log "ERROR: could not write NACM configuration to ${datastore}"
+        exit 1
+    fi
+done
+
+log "SSH listener on port ${NETCONF_PORT}, user admin enabled with full NACM access"

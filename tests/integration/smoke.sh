@@ -58,6 +58,10 @@ python3 "$(dirname "$0")/netconf_caps.py" 127.0.0.1 "${NETCONF_HOST_PORT}" admin
     fail "tarvos modules not advertised over NETCONF"
 }
 
+echo "== NETCONF write as admin (NACM + YANG validation)"
+python3 "$(dirname "$0")/netconf_caps.py" --write-test 127.0.0.1 "${NETCONF_HOST_PORT}" admin admin ||
+    fail "admin cannot write configuration over NETCONF"
+
 echo "== eth0 in VRF mgmt (informational: depends on host kernel VRF support)"
 if docker exec "${NAME}" ip -o link show eth0 | grep -q 'master mgmt '; then
     echo "eth0 is in VRF mgmt"
