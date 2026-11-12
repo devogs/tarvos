@@ -50,7 +50,13 @@ out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0
 
 echo "== NETCONF <hello> advertises tarvos modules"
 for module in tarvos-nftables tarvos-qos tarvos-aaa; do
-    grep -q "urn:tarvos:params:xml:ns:yang:${module}" <<<"${hello}" || fail "${module} not advertised"
+    if ! grep -q "urn:tarvos:params:xml:ns:yang:${module}" <<<"${hello}"; then
+        echo "--- server hello:" >&2
+        echo "${hello}" | tr '>' '>\n' | grep -i -E 'capability' | head -60 >&2
+        echo "--- sysrepoctl -l:" >&2
+        docker exec "${NAME}" sysrepoctl -l >&2 || true
+        fail "${module} not advertised"
+    fi
 done
 
 echo "== eth0 in VRF mgmt (informational: depends on host kernel VRF support)"
