@@ -80,6 +80,7 @@ if [ ! -f "${hostkey_marker}" ]; then
         log "WARNING: could not generate NETCONF host key"
     fi
 fi
+"${SCRIPTS_DIR}/netconf_configure.sh" || log "WARNING: NETCONF listener configuration failed"
 start netopeer2-server netopeer2-server -d -v "${DAEMON_VERBOSITY}"
 
 # --- 5. FRR -----------------------------------------------------------------------
