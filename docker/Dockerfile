@@ -81,7 +81,6 @@ RUN ldconfig \
     && groupadd -g 1001 tacacs \
     && useradd -m -s /bin/bash -G frrvty,frr admin \
     && useradd -m -u 1001 -g tacacs -G frrvty,frr -s /bin/bash tacacs \
-    && echo 'admin:admin' | chpasswd \
     && mkdir -p /opt/tarvos/yangs /opt/tarvos/daemons /opt/tarvos/scripts /run/sshd /var/lib/tarvos
 
 COPY scripts/ /opt/tarvos/scripts/
@@ -92,7 +91,7 @@ EXPOSE 22 830
 VOLUME ["/opt/tarvos/yangs"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD pgrep -x sshd >/dev/null && pgrep -x netopeer2-serve >/dev/null && pgrep -x watchfrr >/dev/null || exit 1
+    CMD ["sh", "-c", "pgrep -x sshd && pgrep -x netopeer2-serve && pgrep -x watchfrr"]
 
 # The supervisor must run as root: sshd, PAM and netopeer2 need it. FRR daemons
 # drop to the unprivileged "frr" user themselves.

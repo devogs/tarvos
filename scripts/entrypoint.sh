@@ -83,9 +83,13 @@ sed -i -E 's/^(bgpd|ospfd|isisd|bfdd)=no/\1=yes/' /etc/frr/daemons
 for daemon in ${TARVOS_DAEMONS:-}; do
     case "${daemon}" in
         *[!A-Za-z0-9_.-]*) log "skipping invalid daemon name: ${daemon}" ;;
-        *) [ -f "${DAEMONS_DIR}/${daemon}" ] \
-            && start "${daemon}" python3 "${DAEMONS_DIR}/${daemon}" \
-            || log "daemon not found: ${daemon}" ;;
+        *)
+            if [ -f "${DAEMONS_DIR}/${daemon}" ]; then
+                start "${daemon}" python3 "${DAEMONS_DIR}/${daemon}"
+            else
+                log "daemon not found: ${daemon}"
+            fi
+            ;;
     esac
 done
 
