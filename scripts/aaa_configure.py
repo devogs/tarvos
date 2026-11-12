@@ -9,14 +9,15 @@ Any TACACS+ misconfiguration degrades to local-only authentication (``admin``).
 
 from __future__ import annotations
 
-import ipaddress
-import json
 import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from tarvos_common import ConfigError, parse_choice, parse_int, parse_ip_list
+from tarvos_common import log as _log
 
 ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin"  # noqa: S105 - documented lab default, overridable via env
@@ -31,44 +32,14 @@ _SECRET_RE = re.compile(r"^[\x21-\x7e]{1,128}$")  # printable ASCII, no whitespa
 _LOG_LEVELS = {"debug": "DEBUG", "info": "INFO", "warning": "INFO", "error": "ERROR"}
 
 
-class ConfigError(ValueError):
-    """Raised for invalid user-supplied configuration."""
-
-
 def log(message: str) -> None:
-    print(f"[aaa] {message}", file=sys.stderr, flush=True)
+    _log("aaa", message)
 
 
 # --------------------------------------------------------------------------- parsing
 def parse_tacacs_servers(raw: str | None) -> list[str]:
-    """Parse ``TACACS_SERVER`` into a validated, ordered, de-duplicated IP list.
-
-    Accepts a JSON list (``["10.0.0.1", "10.0.0.2"]``), a bracketed list without
-    quotes (``[10.0.0.1, 10.0.0.2]``) or a plain comma/space separated list.
-    """
-    if raw is None or not raw.strip():
-        return []
-    text = raw.strip()
-    try:
-        loaded = json.loads(text)
-        items = loaded if isinstance(loaded, list) else [loaded]
-    except json.JSONDecodeError:
-        items = re.split(r"[,\s]+", text.strip("[]"))
-
-    servers: list[str] = []
-    for item in items:
-        candidate = str(item).strip().strip("'\"")
-        if not candidate:
-            continue
-        try:
-            address = str(ipaddress.ip_address(candidate))
-        except ValueError as exc:
-            raise ConfigError(f"invalid TACACS_SERVER entry: {candidate!r}") from exc
-        if address not in servers:
-            servers.append(address)
-    if len(servers) > MAX_SERVERS:
-        raise ConfigError(f"at most {MAX_SERVERS} TACACS+ servers are supported")
-    return servers
+    """Parse ``TACACS_SERVER`` into a validated, ordered, de-duplicated IP list."""
+    return parse_ip_list(raw, "TACACS_SERVER", MAX_SERVERS)
 
 
 def validate_secret(secret: str | None) -> str:
@@ -77,23 +48,8 @@ def validate_secret(secret: str | None) -> str:
     return secret
 
 
-def parse_int(name: str, value: str | None, default: int, low: int, high: int) -> int:
-    if value is None or not value.strip():
-        return default
-    try:
-        number = int(value)
-    except ValueError as exc:
-        raise ConfigError(f"{name} must be an integer") from exc
-    if not low <= number <= high:
-        raise ConfigError(f"{name} must be between {low} and {high}")
-    return number
-
-
 def parse_yes_no(name: str, value: str | None, default: str) -> str:
-    result = (value or default).strip().lower()
-    if result not in ("yes", "no"):
-        raise ConfigError(f"{name} must be 'yes' or 'no'")
-    return result
+    return parse_choice(name, value, default, ("yes", "no"))
 
 
 # --------------------------------------------------------------------------- settings

@@ -47,6 +47,11 @@ fi
 [ -z "${gw4}" ] || ip -4 route replace default via "${gw4}" dev "${IFACE}" table "${TABLE}" || log "WARNING: IPv4 default route not restored"
 [ -z "${gw6}" ] || ip -6 route replace default via "${gw6}" dev "${IFACE}" table "${TABLE}" || log "WARNING: IPv6 default route not restored"
 
+# Outbound connections (syslog, TACACS+) from sockets not bound to the VRF only consult
+# the main table, which no longer holds the management routes: fall through to them.
+ip -4 rule show | grep -q "lookup ${TABLE}" || ip -4 rule add pref 32765 lookup "${TABLE}" || log "WARNING: IPv4 fallback rule not added"
+ip -6 rule show | grep -q "lookup ${TABLE}" || ip -6 rule add pref 32765 lookup "${TABLE}" 2>/dev/null || true
+
 # Let daemons that are not VRF-aware (sshd, netopeer2) accept connections arriving in the VRF.
 for key in net.ipv4.tcp_l3mdev_accept net.ipv4.udp_l3mdev_accept; do
     sysctl -q -w "${key}=1" 2>/dev/null || log "WARNING: could not set ${key} (set it via container sysctls)"

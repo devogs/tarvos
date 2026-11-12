@@ -86,7 +86,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tini frr openssh-server libpam-modules \
+        tini frr openssh-server libpam-modules rsyslog \
         nftables iproute2 python3 \
         libpcre2-8-0 libssl3 libssh-4 libpam0g libcurl4 \
         procps ca-certificates \

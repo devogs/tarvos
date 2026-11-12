@@ -44,16 +44,25 @@ stop_all() {
 }
 trap 'stop_all; exit 0' SIGTERM SIGINT
 
-# --- 0. Management VRF (eth0 -> vrf mgmt); never fatal ----------------------------
+# --- 0a. rsyslog: /dev/log -> stdout (+ optional remote collectors) ---------------
+python3 "${SCRIPTS_DIR}/syslog_configure.py" || log "WARNING: syslog configuration failed"
+mkdir -p /var/spool/rsyslog
+start rsyslogd rsyslogd -n -f /etc/rsyslog.conf
+for _ in $(seq 1 50); do
+    [ -S /dev/log ] && break
+    sleep 0.1
+done
+
+# --- 0b. Management VRF (eth0 -> vrf mgmt); never fatal ----------------------------
 "${SCRIPTS_DIR}/mgmt_vrf.sh" || log "WARNING: management VRF setup failed"
 
 # --- 1. AAA: admin account, PAM, NSS, sshd config --------------------------------
 python3 "${SCRIPTS_DIR}/aaa_configure.py" || { log "AAA configuration failed"; exit 1; }
 
-# --- 2. sshd (foreground, logs to stderr) ----------------------------------------
+# --- 2. sshd (foreground, logs to syslog) ----------------------------------------
 mkdir -p /run/sshd
 ssh-keygen -A >/dev/null
-start sshd /usr/sbin/sshd -D -e
+start sshd /usr/sbin/sshd -D
 
 # --- 3. YANG modules -> Sysrepo (before plugind/netopeer2) ----------------------
 "${SCRIPTS_DIR}/register_yangs.sh" || log "WARNING: some YANG modules failed to register"
@@ -75,7 +84,7 @@ start netopeer2-server netopeer2-server -d -v "${DAEMON_VERBOSITY}"
 
 # --- 5. FRR -----------------------------------------------------------------------
 if [ ! -s /etc/frr/frr.conf ]; then
-    printf 'frr defaults traditional\nlog stdout\n!\n' >/etc/frr/frr.conf
+    printf 'frr defaults traditional\nlog syslog informational\n!\n' >/etc/frr/frr.conf
     chown frr:frr /etc/frr/frr.conf
     chmod 640 /etc/frr/frr.conf
 fi
