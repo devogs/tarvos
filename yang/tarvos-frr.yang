@@ -1,0 +1,154 @@
+module tarvos-frr {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-frr";
+  prefix tfrr;
+
+  import tarvos-types {
+    prefix ttypes;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "FRR configuration blocks for the daemons that have neither an mgmtd backend
+     nor a structured Tarvos model in this release: pimd, pim6d, ldpd, nhrpd,
+     eigrpd, babeld, pbrd, vrrpd and fabricd.
+
+     Each daemon carries FRR CLI lines, grouped in top-level blocks and
+     interface blocks. They are validated by vtysh and applied with frr-reload
+     in the same transaction as the other Tarvos routing modules. Once a daemon
+     is configured here, Tarvos owns the blocks listed here (removing one from
+     the list removes it from FRR) and every interface line of that daemon (for
+     example ' ip pim'): interface lines of that daemon not listed here are
+     removed. Other blocks of the daemon (CLI-made, or created by the daemon
+     itself) are left alone.
+
+     Prefer the structured modules where they exist: FRR native YANG through
+     mgmtd (frr-interface, frr-vrf, frr-zebra, frr-staticd, frr-ripd,
+     frr-ripngd), FRR native YANG through vtysh (frr-filter, frr-route-map,
+     frr-bgp-route-map, frr-bfdd), and tarvos-bgp, tarvos-ospf, tarvos-isis.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-13 {
+    description
+      "Initial revision.";
+  }
+
+  typedef config-line {
+    type string {
+      length "1..255";
+      pattern '[ -~]+';
+      pattern '.*[!#].*' {
+        modifier invert-match;
+        error-message "'!' and '#' start comments and are not allowed";
+      }
+    }
+    description
+      "One FRR configuration line (printable ASCII). Leading spaces express
+       nesting below the block (for example '  address-family ipv4').";
+  }
+
+  container frr {
+    description
+      "FRR daemons configured with CLI lines.";
+
+    list daemon {
+      key "name";
+      description
+        "Daemon configuration. The daemon must be listed in FRR_DAEMONS.";
+      leaf name {
+        type enumeration {
+          enum pimd {
+            description
+              "PIM (IPv4): 'router pim' blocks; ' ip pim', ' ip igmp',
+               ' ip mroute' interface lines.";
+          }
+          enum pim6d {
+            description
+              "PIM (IPv6): 'router pim6' blocks; ' ipv6 pim', ' ipv6 mld',
+               ' ipv6 mroute' interface lines.";
+          }
+          enum ldpd {
+            description
+              "LDP: 'mpls ldp' and 'l2vpn' blocks.";
+          }
+          enum nhrpd {
+            description
+              "NHRP: ' ip nhrp', ' ipv6 nhrp' interface lines.";
+          }
+          enum eigrpd {
+            description
+              "EIGRP: 'router eigrp' blocks; interface lines ending with
+               'eigrp' (for example ' ip hello-interval eigrp 5').";
+          }
+          enum babeld {
+            description
+              "Babel: 'router babel' blocks; ' babel' interface lines.";
+          }
+          enum pbrd {
+            description
+              "Policy-based routing: 'pbr-map' blocks; ' pbr-policy' interface
+               lines.";
+          }
+          enum vrrpd {
+            description
+              "VRRP: ' vrrp' interface lines.";
+          }
+          enum fabricd {
+            description
+              "OpenFabric: 'router openfabric' blocks; ' ip router openfabric',
+               ' ipv6 router openfabric', ' openfabric' interface lines.";
+          }
+        }
+        description
+          "FRR daemon.";
+      }
+
+      list block {
+        key "header";
+        ordered-by user;
+        description
+          "Top-level configuration blocks.";
+        leaf header {
+          type config-line {
+            pattern '[^ ].*';
+          }
+          description
+            "Block header, for example 'router eigrp 10' or 'mpls ldp'. It must
+             be one of the daemon's block types (see the daemon name).";
+        }
+        leaf-list line {
+          type config-line;
+          ordered-by user;
+          description
+            "Lines of the block, without the closing 'exit'.";
+        }
+      }
+
+      list interface {
+        key "name";
+        description
+          "Interface lines of this daemon.";
+        leaf name {
+          type ttypes:interface-name;
+          description
+            "Interface.";
+        }
+        leaf-list line {
+          type config-line {
+            pattern '[^ ].*';
+          }
+          min-elements 1;
+          ordered-by user;
+          description
+            "Interface lines, without indentation, for example 'ip pim' or
+             'vrrp 5 ip 10.0.0.1'. Each must be one of the daemon's interface
+             line types.";
+        }
+      }
+    }
+  }
+}

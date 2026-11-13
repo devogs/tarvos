@@ -1,0 +1,221 @@
+module tarvos-isis {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-isis";
+  prefix tisis;
+
+  import tarvos-types {
+    prefix ttypes;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "IS-IS configuration for FRR isisd.
+
+     isisd is not an mgmtd backend in FRR 10.7, so this module is rendered into
+     FRR configuration by tarvos-frr-sync and applied with frr-reload. Once
+     configured, Tarvos owns the 'router isis' blocks and the 'ip router isis',
+     'ipv6 router isis' and 'isis ...' interface lines.
+
+     Leaves without a default are not rendered when unset: the FRR default
+     applies.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-13 {
+    description
+      "Initial revision.";
+  }
+
+  typedef level {
+    type enumeration {
+      enum level-1 {
+        description
+          "Level 1 only.";
+      }
+      enum level-1-2 {
+        description
+          "Level 1 and level 2.";
+      }
+      enum level-2-only {
+        description
+          "Level 2 only.";
+      }
+    }
+    description
+      "IS-IS level(s).";
+  }
+
+  container isis {
+    description
+      "IS-IS (isisd).";
+
+    list instance {
+      key "area-tag";
+      description
+        "IS-IS instances.";
+      leaf area-tag {
+        type ttypes:object-name;
+        description
+          "Instance (area) tag.";
+      }
+      leaf vrf {
+        type ttypes:vrf-name;
+        default "default";
+        description
+          "VRF of the instance.";
+      }
+      leaf is-type {
+        type level;
+        description
+          "Levels the router participates in. Unset: level-1-2.";
+      }
+      leaf-list net {
+        type string {
+          pattern '[0-9a-fA-F]{2}(\.[0-9a-fA-F]{4}){3,9}\.00';
+        }
+        min-elements 1;
+        max-elements 3;
+        description
+          "Network entity title, for example 49.0001.0000.0000.0001.00.";
+      }
+      leaf metric-style {
+        type enumeration {
+          enum narrow;
+          enum transition;
+          enum wide;
+        }
+        description
+          "Metric style. Unset: wide.";
+      }
+      leaf log-adjacency-changes {
+        type boolean;
+        description
+          "Log adjacency state changes.";
+      }
+      list redistribute {
+        key "family protocol level";
+        description
+          "Redistribution of other route sources.";
+        leaf family {
+          type enumeration {
+            enum ipv4;
+            enum ipv6;
+          }
+          description
+            "Address family.";
+        }
+        leaf protocol {
+          type enumeration {
+            enum connected;
+            enum static;
+            enum kernel;
+            enum bgp;
+            enum ospf;
+            enum ospf6;
+            enum rip;
+            enum ripng;
+          }
+          description
+            "Route source.";
+        }
+        leaf level {
+          type enumeration {
+            enum level-1;
+            enum level-2;
+          }
+          description
+            "Level the routes are injected into.";
+        }
+        leaf metric {
+          type uint32 {
+            range "0..16777215";
+          }
+          description
+            "Metric of redistributed routes.";
+        }
+        leaf route-map {
+          type ttypes:object-name;
+          description
+            "Route-map filtering redistributed routes.";
+        }
+      }
+    }
+
+    list interface {
+      key "name";
+      description
+        "Interface settings.";
+      leaf name {
+        type ttypes:interface-name;
+        description
+          "Interface.";
+      }
+      leaf instance {
+        type leafref {
+          path "../../instance/area-tag";
+        }
+        mandatory true;
+        description
+          "IS-IS instance the interface belongs to.";
+      }
+      leaf ipv4 {
+        type boolean;
+        default "true";
+        description
+          "Route IPv4 over the interface ('ip router isis').";
+      }
+      leaf ipv6 {
+        type boolean;
+        default "false";
+        description
+          "Route IPv6 over the interface ('ipv6 router isis').";
+      }
+      leaf circuit-type {
+        type level;
+        description
+          "Levels of adjacencies on the interface.";
+      }
+      leaf network-type {
+        type enumeration {
+          enum broadcast;
+          enum point-to-point;
+        }
+        description
+          "Network type. Unset: broadcast.";
+      }
+      leaf metric {
+        type uint32 {
+          range "0..16777215";
+        }
+        description
+          "Metric (both levels).";
+      }
+      leaf passive {
+        type boolean;
+        description
+          "Advertise the interface but do not form adjacencies.";
+      }
+      leaf hello-interval {
+        type uint16 {
+          range "1..600";
+        }
+        units "seconds";
+        description
+          "Hello interval (both levels).";
+      }
+      leaf bfd {
+        type boolean;
+        description
+          "Track adjacencies with BFD (needs bfdd).";
+      }
+      leaf bfd-profile {
+        type ttypes:object-name;
+        description
+          "BFD profile (implies bfd).";
+      }
+    }
+  }
+}

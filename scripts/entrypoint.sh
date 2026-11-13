@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tarvos container entrypoint (runs under tini as PID 1).
 # Boot order: AAA -> sshd -> YANG registration -> sysrepo-plugind -> netopeer2
-#             -> LLDP -> FRR -> Python backend daemons.
+#             -> LLDP -> FRR -> Python backend daemons (netdev, FRR, LLDP).
 # All configuration comes from the environment (see .env.example).
 set -uo pipefail
 
@@ -21,7 +21,8 @@ esac
 
 # name:pid of supervised foreground daemons
 declare -A PIDS=()
-CRITICAL=(sshd sysrepo-plugind netopeer2-server)
+# frr_sync is critical: without it NETCONF would accept FRR configuration it never applies.
+CRITICAL=(sshd sysrepo-plugind netopeer2-server frr_sync)
 shutting_down=0
 
 start() {
@@ -105,6 +106,10 @@ fi
 /usr/lib/frr/frrinit.sh start >&2 || log "WARNING: FRR failed to start"
 
 # --- 6. Python backend daemons ----------------------------------------------------
+# Kernel VRF/bridge/VXLAN devices (tarvos-vrf, tarvos-vxlan), then FRR: native FRR YANG
+# through mgmtd, the other daemons through vtysh/frr-reload.
+start netdev_sync python3 "${DAEMONS_DIR}/netdev_sync.py"
+start frr_sync python3 "${DAEMONS_DIR}/frr_sync.py"
 # LLDP: applies tarvos-lldp NETCONF configuration to lldpd and serves its neighbours.
 if [ "${lldp_running}" -eq 1 ]; then
     start lldp_sync python3 "${DAEMONS_DIR}/lldp_sync.py"
