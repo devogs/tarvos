@@ -121,8 +121,10 @@ RUN ldconfig \
     && groupadd -g 1001 tacacs \
     && useradd -m -s /bin/bash -G frrvty,frr admin \
     && useradd -m -u 1001 -g tacacs -G frrvty,frr -s /bin/bash tacacs \
-    && mkdir -p /opt/tarvos/yangs /opt/tarvos/daemons /opt/tarvos/scripts /run/sshd /var/lib/tarvos
+    && mkdir -p /opt/tarvos/yangs /opt/tarvos/yangs-builtin /opt/tarvos/daemons /opt/tarvos/scripts /run/sshd /var/lib/tarvos
 
+# Shipped modules live outside the YANG_DIR volume: GNS3 mounts an empty directory over it.
+COPY yang/ /opt/tarvos/yangs-builtin/
 COPY scripts/ /opt/tarvos/scripts/
 COPY daemons/ /opt/tarvos/daemons/
 RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py
