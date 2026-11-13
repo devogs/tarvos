@@ -29,7 +29,7 @@ def main() -> int:
         if action == "set":
             leaf = f"<tx-interval>{INTERVAL}</tx-interval>"
         else:
-            leaf = '<tx-interval xmlns:nc="%s" nc:operation="remove"/>' % NC
+            leaf = f'<tx-interval xmlns:nc="{NC}" nc:operation="remove"/>'
         session.edit_config(
             target="running",
             config=f'<config xmlns="{NC}"><lldp xmlns="{NS}">{leaf}</lldp></config>',

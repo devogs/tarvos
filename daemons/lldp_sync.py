@@ -61,7 +61,8 @@ def desired_state(base: LldpSettings, config: dict[str, Any] | None) -> Desired:
         description=config.get("system-description", base.description),
     )
     ports = {
-        entry["name"]: entry.get("admin-status", "tx-and-rx") for entry in config.get("interface", [])
+        entry["name"]: entry.get("admin-status", "tx-and-rx")
+        for entry in config.get("interface", [])
     }
     return Desired(settings, paused=config.get("enabled", True) is False, ports=ports)
 
