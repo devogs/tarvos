@@ -177,7 +177,8 @@ def configure(env: dict[str, str], root: Path, *, set_password: bool = True) -> 
 
     # PAM files carry the TACACS+ secret in module arguments: root-only, 0600.
     write_file(root, "/etc/pam.d/sshd", render_pam(settings, with_session=True), 0o600)
-    write_file(root, "/etc/pam.d/netopeer2", render_pam(settings, with_session=False), 0o600)
+    # libnetconf2 opens the PAM service named "netopeer2.conf" (not "netopeer2")
+    write_file(root, "/etc/pam.d/netopeer2.conf", render_pam(settings, with_session=False), 0o600)
     write_file(root, "/etc/ssh/sshd_config.d/10-tarvos.conf", render_sshd(env), 0o644)
 
     nsswitch = root / "etc/nsswitch.conf"

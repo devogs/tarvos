@@ -2,13 +2,19 @@
 # Configure the Netopeer2 SSH listener, allowed NETCONF users and NACM in the Sysrepo
 # startup and running datastores. Must run BEFORE netopeer2-server starts. Idempotent (full replace).
 #
-# Netopeer2 only lets users listed in ietf-netconf-server log in. "admin" is listed with
-# keyboard-interactive/use-system-auth, so authentication goes through /etc/pam.d/netopeer2
-# (local password, or TACACS+ when configured).
+# NETCONF users are system users (the local-users-supported feature is disabled at image
+# build time): any SSH username is authenticated through PAM (/etc/pam.d/netopeer2.conf:
+# local password for admin, TACACS+ for everyone else when configured).
 set -uo pipefail
 
 NETCONF_PORT="${NETCONF_PORT:-830}"
+TACACS_NETCONF_ACCESS="${TACACS_NETCONF_ACCESS:-ro}"
 log() { echo "[netconf] $*" >&2; }
+
+case "${TACACS_NETCONF_ACCESS}" in
+    ro|rw|none) ;;
+    *) log "WARNING: invalid TACACS_NETCONF_ACCESS '${TACACS_NETCONF_ACCESS}', using 'ro'"; TACACS_NETCONF_ACCESS=ro ;;
+esac
 
 if ! [[ "${NETCONF_PORT}" =~ ^[0-9]{1,5}$ ]] || [ "${NETCONF_PORT}" -lt 1 ] || [ "${NETCONF_PORT}" -gt 65535 ]; then
     log "ERROR: invalid NETCONF_PORT '${NETCONF_PORT}'"
@@ -36,16 +42,6 @@ config="<netconf-server xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-server\
                 </public-key>
               </host-key>
             </server-identity>
-            <client-authentication>
-              <users>
-                <user>
-                  <name>admin</name>
-                  <keyboard-interactive xmlns=\"urn:cesnet:libnetconf2-netconf-server\">
-                    <use-system-auth/>
-                  </keyboard-interactive>
-                </user>
-              </users>
-            </client-authentication>
           </ssh-server-parameters>
         </ssh>
       </endpoint>
@@ -80,6 +76,23 @@ if sysrepoctl -l 2>/dev/null | grep -qE '^tarvos-aaa[[:space:]]'; then
 else
     log "tarvos-aaa not installed: skipping the TACACS+ secret read-protection rule"
 fi
+# TACACS+ users are authenticated by PAM under their own name and belong to the OS group
+# "tacacs" (NACM external groups), so one rule set covers them all.
+case "${TACACS_NETCONF_ACCESS}" in
+    rw)
+        tacacs_rules="<rule-list><name>tacacs-users</name><group>tacacs</group>${secret_rule}
+    <rule><name>permit-all</name><module-name>*</module-name><access-operations>*</access-operations><action>permit</action></rule>
+  </rule-list>" ;;
+    ro)
+        tacacs_rules='<rule-list><name>tacacs-users</name><group>tacacs</group>
+    <rule><name>read-data</name><module-name>*</module-name><access-operations>read</access-operations><action>permit</action></rule>
+    <rule><name>get-config</name><module-name>ietf-netconf</module-name><rpc-name>get-config</rpc-name><access-operations>exec</access-operations><action>permit</action></rule>
+    <rule><name>get</name><module-name>ietf-netconf</module-name><rpc-name>get</rpc-name><access-operations>exec</access-operations><action>permit</action></rule>
+    <rule><name>close-session</name><module-name>ietf-netconf</module-name><rpc-name>close-session</rpc-name><access-operations>exec</access-operations><action>permit</action></rule>
+    <rule><name>get-schema</name><module-name>ietf-netconf-monitoring</module-name><rpc-name>get-schema</rpc-name><access-operations>exec</access-operations><action>permit</action></rule>
+  </rule-list>' ;;
+    *) tacacs_rules="" ;;
+esac
 nacm="<nacm xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-acm\">
   <enable-nacm>true</enable-nacm>
   <read-default>deny</read-default>
@@ -89,6 +102,9 @@ nacm="<nacm xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-acm\">
     <group>
       <name>admin</name>
       <user-name>admin</user-name>
+    </group>
+    <group>
+      <name>tacacs</name>
     </group>
   </groups>
   <rule-list>
@@ -102,6 +118,7 @@ nacm="<nacm xmlns=\"urn:ietf:params:xml:ns:yang:ietf-netconf-acm\">
       <action>permit</action>
     </rule>
   </rule-list>
+  ${tacacs_rules}
 </nacm>"
 for datastore in startup running; do
     if ! echo "${nacm}" | sysrepocfg --import -d "${datastore}" -f xml -m ietf-netconf-acm >&2; then

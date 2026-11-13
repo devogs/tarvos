@@ -91,7 +91,7 @@ def test_nsswitch_toggle_is_idempotent():
 def test_configure_writes_secret_files_0600(tmp_path):
     env = {"TACACS_SERVER": "[10.0.0.1, 10.0.0.2]", "TACACS_SECRET": "s3cret", "SSH_PORT": "2200"}
     configure(env, tmp_path, set_password=False)
-    for name in ("sshd", "netopeer2"):
+    for name in ("sshd", "netopeer2.conf"):
         path = tmp_path / "etc/pam.d" / name
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert "secret=s3cret" in path.read_text()

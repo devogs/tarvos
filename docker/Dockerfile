@@ -40,7 +40,13 @@ RUN git clone --depth 1 --branch "${SYSREPO_VERSION}" https://github.com/sysrepo
         -DREPO_PATH=/var/lib/sysrepo \
     && cmake --build sysrepo/build -j"$(nproc)" && cmake --install sysrepo/build && ldconfig
 
+# Patch: in system-users mode, upstream checks the SSH "password" method against /etc/shadow
+# only (PAM is used for keyboard-interactive alone). Clients such as ncclient/paramiko use
+# "password", so TACACS+ users could not log in. The patch routes it through the same PAM
+# service (netopeer2.conf).
+COPY docker/patches/libnetconf2-password-pam.patch /src/patches/
 RUN git clone --depth 1 --branch "${LIBNETCONF2_VERSION}" https://github.com/CESNET/libnetconf2.git \
+    && git -C libnetconf2 apply /src/patches/libnetconf2-password-pam.patch \
     && cmake -S libnetconf2 -B libnetconf2/build -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF \
     && cmake --build libnetconf2/build -j"$(nproc)" && cmake --install libnetconf2/build && ldconfig
 
@@ -49,6 +55,18 @@ RUN git clone --depth 1 --branch "${NETOPEER2_VERSION}" https://github.com/CESNE
     && cmake -S netopeer2 -B netopeer2/build -DCMAKE_BUILD_TYPE=Release \
         -DGENERATE_HOSTKEY=OFF -DMERGE_LISTEN_CONFIG=ON \
     && cmake --build netopeer2/build -j"$(nproc)" && cmake --install netopeer2/build
+
+# NETCONF "system users" mode: with the local-users-supported feature of ietf-ssh-server off,
+# libnetconf2 accepts any SSH username and authenticates it through PAM (so through TACACS+),
+# instead of requiring every user to be listed in the Sysrepo config. The NETCONF session then
+# carries the real username (for NACM and logs). Must be done here: it cannot be changed while
+# Netopeer2 runs, and the install above leaves a user list that has to be emptied first.
+# hadolint ignore=DL4006
+RUN printf '%s\n' '<netconf-server xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-server"/>' \
+        | sysrepocfg --import -d startup -f xml -m ietf-netconf-server \
+    && sysrepoctl -c ietf-ssh-server \
+        -d local-user-auth-publickey -d local-user-auth-password -d local-user-auth-none \
+        -d local-users-supported
 
 # Neither pam_tacplus nor libnss-ato is packaged in Debian bookworm.
 # The PAM module lands in /usr/local/lib/security/pam_tacplus.so.
