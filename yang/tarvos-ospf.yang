@@ -1,0 +1,357 @@
+module tarvos-ospf {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-ospf";
+  prefix tospf;
+
+  import ietf-inet-types {
+    prefix inet;
+  }
+  import tarvos-types {
+    prefix ttypes;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "OSPFv2 (FRR ospfd) and OSPFv3 (FRR ospf6d) configuration.
+
+     Neither daemon is an mgmtd backend in FRR 10.7, so this module is rendered
+     into FRR configuration by tarvos-frr-sync and applied with frr-reload.
+     Once configured, Tarvos owns the 'router ospf' / 'router ospf6' blocks and
+     the 'ip ospf' / 'ipv6 ospf6' interface lines of that protocol.
+
+     Leaves without a default are not rendered when unset: the FRR default
+     applies.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-13 {
+    description
+      "Initial revision.";
+  }
+
+  typedef area-id {
+    type inet:ipv4-address-no-zone;
+    description
+      "OSPF area, dotted-quad (0.0.0.0 is the backbone).";
+  }
+
+  typedef redistribute-protocol {
+    type enumeration {
+      enum connected;
+      enum static;
+      enum kernel;
+      enum bgp;
+      enum isis;
+      enum rip;
+      enum ripng;
+    }
+    description
+      "Route source redistributed into OSPF.";
+  }
+
+  grouping area-config {
+    description
+      "Area type.";
+    leaf area-id {
+      type area-id;
+      description
+        "Area.";
+    }
+    leaf type {
+      type enumeration {
+        enum normal {
+          description
+            "Regular area.";
+        }
+        enum stub {
+          description
+            "Stub area.";
+        }
+        enum nssa {
+          description
+            "Not-so-stubby area.";
+        }
+      }
+      must ". = 'normal' or ../area-id != '0.0.0.0'" {
+        error-message "the backbone cannot be a stub or NSSA area";
+      }
+      default "normal";
+      description
+        "Area type.";
+    }
+    leaf no-summary {
+      type boolean;
+      must ". = 'false' or ../type != 'normal'" {
+        error-message "no-summary needs a stub or NSSA area";
+      }
+      default "false";
+      description
+        "Totally stubby: do not inject inter-area routes.";
+    }
+  }
+
+  grouping redistribute {
+    description
+      "Redistribution.";
+    list redistribute {
+      key "protocol";
+      description
+        "Redistribution of other route sources.";
+      leaf protocol {
+        type redistribute-protocol;
+        description
+          "Route source.";
+      }
+      leaf metric {
+        type uint32 {
+          range "0..16777214";
+        }
+        description
+          "Metric of redistributed routes.";
+      }
+      leaf metric-type {
+        type uint8 {
+          range "1..2";
+        }
+        description
+          "External metric type. Unset: 2.";
+      }
+      leaf route-map {
+        type ttypes:object-name;
+        description
+          "Route-map filtering redistributed routes.";
+      }
+    }
+  }
+
+  grouping interface-common {
+    description
+      "Interface settings shared by OSPFv2 and OSPFv3.";
+    leaf name {
+      type ttypes:interface-name;
+      description
+        "Interface.";
+    }
+    leaf area {
+      type area-id;
+      description
+        "Run OSPF on the interface in this area. The instance is the one of the
+         interface's VRF.";
+    }
+    leaf cost {
+      type uint16 {
+        range "1..65535";
+      }
+      description
+        "Interface cost. Unset: derived from the bandwidth.";
+    }
+    leaf passive {
+      type boolean;
+      description
+        "Advertise the interface but do not form adjacencies.";
+    }
+    leaf hello-interval {
+      type uint16 {
+        range "1..65535";
+      }
+      units "seconds";
+      description
+        "Hello interval.";
+    }
+    leaf dead-interval {
+      type uint16 {
+        range "1..65535";
+      }
+      units "seconds";
+      description
+        "Dead interval.";
+    }
+    leaf priority {
+      type uint8;
+      description
+        "DR election priority.";
+    }
+    leaf bfd {
+      type boolean;
+      description
+        "Track neighbors with BFD (needs bfdd).";
+    }
+    leaf bfd-profile {
+      type ttypes:object-name;
+      description
+        "BFD profile (implies bfd).";
+    }
+  }
+
+  container ospf {
+    description
+      "OSPFv2 (ospfd).";
+
+    list instance {
+      key "vrf";
+      description
+        "OSPFv2 instances, one per VRF.";
+      leaf vrf {
+        type ttypes:vrf-name;
+        description
+          "VRF; 'default' for the main instance.";
+      }
+      leaf router-id {
+        type inet:ipv4-address-no-zone;
+        description
+          "Router ID. Unset: chosen by zebra.";
+      }
+      leaf log-adjacency-changes {
+        type boolean;
+        description
+          "Log adjacency state changes.";
+      }
+      leaf passive-default {
+        type boolean;
+        description
+          "Interfaces are passive unless 'passive' is false
+           ('passive-interface default').";
+      }
+      leaf reference-bandwidth {
+        type uint32 {
+          range "1..4294967";
+        }
+        units "Mbit/s";
+        description
+          "Reference bandwidth for cost calculation.";
+      }
+      leaf maximum-paths {
+        type uint16 {
+          range "1..128";
+        }
+        description
+          "ECMP paths.";
+      }
+      list area {
+        key "area-id";
+        description
+          "Areas.";
+        uses area-config;
+        leaf-list network {
+          type inet:ipv4-prefix;
+          description
+            "Enable OSPF on interfaces with an address in these prefixes.";
+        }
+      }
+      uses redistribute;
+      container default-information {
+        presence "Originate a default route.";
+        description
+          "Default route origination.";
+        leaf always {
+          type boolean;
+          default "false";
+          description
+            "Originate even without a default route in the RIB.";
+        }
+        leaf metric {
+          type uint32 {
+            range "0..16777214";
+          }
+          description
+            "Metric.";
+        }
+        leaf metric-type {
+          type uint8 {
+            range "1..2";
+          }
+          description
+            "External metric type.";
+        }
+        leaf route-map {
+          type ttypes:object-name;
+          description
+            "Route-map.";
+        }
+      }
+    }
+
+    list interface {
+      key "name";
+      description
+        "Interface settings ('ip ospf ...').";
+      uses interface-common;
+      leaf network-type {
+        type enumeration {
+          enum broadcast;
+          enum non-broadcast;
+          enum point-to-point;
+          enum point-to-multipoint;
+        }
+        description
+          "Network type. Unset: derived from the interface.";
+      }
+    }
+  }
+
+  container ospfv3 {
+    description
+      "OSPFv3 (ospf6d).";
+
+    list instance {
+      key "vrf";
+      description
+        "OSPFv3 instances, one per VRF.";
+      leaf vrf {
+        type ttypes:vrf-name;
+        description
+          "VRF; 'default' for the main instance.";
+      }
+      leaf router-id {
+        type inet:ipv4-address-no-zone;
+        description
+          "Router ID. Unset: chosen by zebra.";
+      }
+      leaf log-adjacency-changes {
+        type boolean;
+        description
+          "Log adjacency state changes.";
+      }
+      leaf reference-bandwidth {
+        type uint32 {
+          range "1..4294967";
+        }
+        units "Mbit/s";
+        description
+          "Reference bandwidth for cost calculation.";
+      }
+      leaf maximum-paths {
+        type uint16 {
+          range "1..128";
+        }
+        description
+          "ECMP paths.";
+      }
+      list area {
+        key "area-id";
+        description
+          "Area types (interfaces join areas with interface/area).";
+        uses area-config;
+      }
+      uses redistribute;
+    }
+
+    list interface {
+      key "name";
+      description
+        "Interface settings ('ipv6 ospf6 ...').";
+      uses interface-common;
+      leaf network-type {
+        type enumeration {
+          enum broadcast;
+          enum point-to-point;
+        }
+        description
+          "Network type. Unset: derived from the interface.";
+      }
+    }
+  }
+}

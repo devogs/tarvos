@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Select which FRR daemons run, from FRR_DAEMONS (space/comma separated, optional [ ] and
-# quotes: "zebra bgpd", "[zebra, ospfd]"). zebra is always enabled; unset/empty means zebra only.
+# quotes: "zebra bgpd", "[zebra, ospfd]"). FRR 10.7 always starts mgmtd, zebra and staticd
+# (frrinit.sh ignores their setting); unset/empty means only those.
 # Rewrites ${FRR_DAEMONS_FILE} (the file read by frrinit.sh) and never fails the boot.
 set -uo pipefail
 
@@ -13,10 +14,11 @@ raw="${FRR_DAEMONS:-}"
 raw="${raw//[\[\]\"\',]/ }"
 raw="${raw,,}"
 
-declare -A want=([zebra]=1)
+declare -A want=([zebra]=1 [staticd]=1)
 for d in ${raw}; do
     case "${d}" in
         lldpd) log "lldpd is not an FRR daemon (use LLDP_ENABLED): ignored" ;;
+        mgmtd) ;; # always started by FRR
         *)
             known=0
             for k in "${KNOWN[@]}"; do [ "${k}" = "${d}" ] && known=1; done
@@ -45,4 +47,4 @@ for k in "${KNOWN[@]}"; do
         echo "${k}=${value}" >>"${FRR_DAEMONS_FILE}"
     fi
 done
-log "enabled: ${enabled[*]}"
+log "enabled: mgmtd ${enabled[*]}"

@@ -1,0 +1,132 @@
+module tarvos-vxlan {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-vxlan";
+  prefix tvxlan;
+
+  import ietf-inet-types {
+    prefix inet;
+  }
+  import ietf-yang-types {
+    prefix yang;
+  }
+  import tarvos-types {
+    prefix ttypes;
+  }
+  import tarvos-vrf {
+    prefix tvrf;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "VXLAN data plane for BGP EVPN (kernel side): the local VTEP, L2VNIs
+     (bridged segments, EVPN type-2/type-3) and L3VNIs (routed VRF segments,
+     EVPN type-5 and symmetric IRB).
+
+     Each VNI gets a bridge 'br<vni>' and a VXLAN device 'vx<vni>' (learning
+     off, neighbour suppression on), as recommended by the FRR EVPN guide. FRR
+     zebra discovers them; the control plane is configured in tarvos-bgp
+     (advertise-all-vni, per-VRF 'advertise ipv4 unicast') and the L3VNI to VRF
+     mapping in FRR's native frr-vrf/frr-zebra 'l3vni-id'.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-13 {
+    description
+      "Initial revision.";
+  }
+
+  container vxlan {
+    must "not(l2vni or l3vni) or source-address" {
+      error-message "a VTEP source-address is required to create VNIs";
+    }
+    description
+      "VXLAN tunnel endpoint.";
+
+    leaf source-address {
+      type inet:ipv4-address-no-zone;
+      description
+        "Local VTEP address (normally a loopback address advertised in the
+         underlay).";
+    }
+    leaf udp-port {
+      type inet:port-number;
+      default "4789";
+      description
+        "VXLAN UDP port.";
+    }
+    leaf mtu {
+      type uint16 {
+        range "1280..9216";
+      }
+      description
+        "MTU of the VXLAN devices and their bridges. Unset: kernel default.";
+    }
+
+    list l2vni {
+      key "vni";
+      description
+        "Layer 2 VNIs.";
+      leaf vni {
+        type ttypes:vni;
+        description
+          "VNI.";
+      }
+      leaf vrf {
+        type leafref {
+          path "/tvrf:vrfs/tvrf:vrf/tvrf:name";
+        }
+        description
+          "VRF of the SVI (bridge interface) for routing (IRB). Unset: the
+           bridge stays in the default table.";
+      }
+      leaf-list access-interface {
+        type ttypes:interface-name;
+        description
+          "Local ports attached to the segment.";
+      }
+      leaf-list gateway-address {
+        type ttypes:ip-address-with-prefix-length;
+        description
+          "Distributed anycast gateway addresses of the SVI, for example
+           10.1.100.1/24.";
+      }
+      leaf gateway-mac {
+        type yang:mac-address;
+        description
+          "Anycast gateway MAC of the SVI (same on every VTEP).";
+      }
+      leaf neighbor-suppression {
+        type boolean;
+        default "true";
+        description
+          "ARP/ND suppression on the VXLAN port.";
+      }
+    }
+
+    list l3vni {
+      key "vni";
+      unique "vrf";
+      description
+        "Layer 3 VNIs, one per VRF.";
+      leaf vni {
+        type ttypes:vni;
+        must "not(/tvxlan:vxlan/tvxlan:l2vni[tvxlan:vni = current()])" {
+          error-message "a VNI cannot be both an L2VNI and an L3VNI";
+        }
+        description
+          "VNI.";
+      }
+      leaf vrf {
+        type leafref {
+          path "/tvrf:vrfs/tvrf:vrf/tvrf:name";
+        }
+        mandatory true;
+        description
+          "VRF routed over this VNI.";
+      }
+    }
+  }
+}

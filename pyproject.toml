@@ -6,9 +6,11 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "S", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106"]
+"tests/**" = ["S101", "S104", "S105", "S106"]
 "scripts/aaa_configure.py" = ["S603", "S607"]
 "daemons/lldp_sync.py" = ["S603", "S607"]
+"daemons/netdev_sync.py" = ["S603", "S607"]
+"daemons/tarvos_frr/vtysh.py" = ["S603", "S607"]
 
 [tool.pytest.ini_options]
 pythonpath = ["scripts", "daemons", "tests/integration"]

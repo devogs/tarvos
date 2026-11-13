@@ -1,0 +1,633 @@
+module tarvos-bgp {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-bgp";
+  prefix tbgp;
+
+  import ietf-inet-types {
+    prefix inet;
+  }
+  import tarvos-types {
+    prefix ttypes;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "BGP, MP-BGP and BGP EVPN (RFC 7432, RFC 8365, RFC 9136) configuration for FRR
+     bgpd.
+
+     FRR 10.7 bgpd has no YANG northbound (its frr-bgp modules are not
+     implemented by the daemon and bgpd is not an mgmtd backend), so this module
+     is rendered into FRR configuration by tarvos-frr-sync and applied with
+     frr-reload. Tarvos owns every 'router bgp', 'bgp community-list' and
+     'bgp as-path access-list' block once this module has been configured.
+
+     Leaves without a default are not rendered when unset: the FRR default
+     ('frr defaults traditional') applies.
+
+     Kernel side of EVPN (VRF, bridge and VXLAN devices) is configured with
+     tarvos-vrf and tarvos-vxlan; the L3VNI of a VRF with FRR's native
+     frr-vrf/frr-zebra 'l3vni-id'.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-13 {
+    description
+      "Initial revision.";
+  }
+
+  typedef action {
+    type enumeration {
+      enum permit;
+      enum deny;
+    }
+    description
+      "Filter action.";
+  }
+
+  typedef afi-safi {
+    type enumeration {
+      enum ipv4-unicast {
+        description
+          "IPv4 unicast.";
+      }
+      enum ipv6-unicast {
+        description
+          "IPv6 unicast.";
+      }
+      enum l2vpn-evpn {
+        description
+          "L2VPN EVPN.";
+      }
+    }
+    description
+      "Address family.";
+  }
+
+  typedef redistribute-protocol {
+    type enumeration {
+      enum connected;
+      enum static;
+      enum kernel;
+      enum ospf;
+      enum ospf6;
+      enum isis;
+      enum rip;
+      enum ripng;
+    }
+    description
+      "Route source redistributed into BGP.";
+  }
+
+  grouping timers {
+    description
+      "Keepalive and hold timers.";
+    container timers {
+      presence "Non-default timers.";
+      description
+        "BGP timers.";
+      leaf keepalive {
+        type uint16;
+        units "seconds";
+        mandatory true;
+        description
+          "Keepalive interval.";
+      }
+      leaf hold-time {
+        type uint16 {
+          range "0 | 3..65535";
+        }
+        units "seconds";
+        mandatory true;
+        description
+          "Hold time.";
+      }
+    }
+  }
+
+  grouping neighbor-config {
+    description
+      "Configuration shared by neighbors and peer-groups.";
+
+    leaf remote-as {
+      type union {
+        type ttypes:as-number;
+        type enumeration {
+          enum internal {
+            description
+              "Same AS as the local instance (iBGP).";
+          }
+          enum external {
+            description
+              "Any AS other than the local one (eBGP).";
+          }
+        }
+      }
+      description
+        "Peer AS.";
+    }
+    leaf description {
+      type ttypes:description-string;
+      description
+        "Neighbor description.";
+    }
+    leaf update-source {
+      type union {
+        type inet:ip-address-no-zone;
+        type ttypes:interface-name;
+      }
+      description
+        "Source address or interface of the BGP session.";
+    }
+    leaf ebgp-multihop {
+      type uint8 {
+        range "1..255";
+      }
+      description
+        "Maximum hop count for eBGP sessions to non-directly connected peers.";
+    }
+    leaf password {
+      type string {
+        length "1..80";
+        pattern '[A-Za-z0-9_.,:/()+=@#%^&*-]+';
+      }
+      description
+        "TCP MD5 password.";
+    }
+    leaf bfd {
+      type boolean;
+      description
+        "Track the session with BFD (needs bfdd).";
+    }
+    leaf bfd-profile {
+      type ttypes:object-name;
+      description
+        "BFD profile used for the session (implies bfd).";
+    }
+    leaf shutdown {
+      type boolean;
+      description
+        "Administratively shut the session down.";
+    }
+    leaf capability-extended-nexthop {
+      type boolean;
+      description
+        "Advertise the extended next-hop capability (RFC 8950).";
+    }
+    uses timers;
+
+    list address-family {
+      key "name";
+      description
+        "Per address family settings.";
+      leaf name {
+        type afi-safi;
+        description
+          "Address family.";
+      }
+      leaf activate {
+        type boolean;
+        description
+          "Exchange routes of this family. Unset: FRR default (IPv4 unicast
+           is active unless 'default-ipv4-unicast' is false).";
+      }
+      leaf route-map-in {
+        type ttypes:object-name;
+        description
+          "Inbound route-map.";
+      }
+      leaf route-map-out {
+        type ttypes:object-name;
+        description
+          "Outbound route-map.";
+      }
+      leaf prefix-list-in {
+        type ttypes:object-name;
+        must "../name != 'l2vpn-evpn'" {
+          error-message "prefix-lists do not apply to l2vpn-evpn";
+        }
+        description
+          "Inbound prefix-list.";
+      }
+      leaf prefix-list-out {
+        type ttypes:object-name;
+        must "../name != 'l2vpn-evpn'" {
+          error-message "prefix-lists do not apply to l2vpn-evpn";
+        }
+        description
+          "Outbound prefix-list.";
+      }
+      leaf next-hop-self {
+        type boolean;
+        description
+          "Set this router as the next hop of advertised routes.";
+      }
+      leaf route-reflector-client {
+        type boolean;
+        description
+          "Treat the neighbor as a route reflector client.";
+      }
+      leaf soft-reconfiguration-inbound {
+        type boolean;
+        description
+          "Keep received routes for inbound soft reconfiguration.";
+      }
+      leaf allowas-in {
+        type uint8 {
+          range "1..10";
+        }
+        description
+          "Accept routes containing the local AS this many times.";
+      }
+      leaf maximum-prefix {
+        type uint32 {
+          range "1..4294967295";
+        }
+        description
+          "Maximum number of prefixes accepted from the neighbor.";
+      }
+      leaf default-originate {
+        type boolean;
+        must "../name != 'l2vpn-evpn'" {
+          error-message "default-originate does not apply to l2vpn-evpn";
+        }
+        description
+          "Send a default route to the neighbor.";
+      }
+    }
+  }
+
+  grouping unicast-af {
+    description
+      "IPv4/IPv6 unicast address family of an instance.";
+    leaf-list network {
+      type inet:ip-prefix;
+      description
+        "Prefixes originated by BGP.";
+    }
+    list redistribute {
+      key "protocol";
+      description
+        "Redistribution of other route sources.";
+      leaf protocol {
+        type redistribute-protocol;
+        description
+          "Route source.";
+      }
+      leaf metric {
+        type uint32;
+        description
+          "MED of redistributed routes.";
+      }
+      leaf route-map {
+        type ttypes:object-name;
+        description
+          "Route-map filtering redistributed routes.";
+      }
+    }
+    list aggregate-address {
+      key "prefix";
+      description
+        "Aggregate routes.";
+      leaf prefix {
+        type inet:ip-prefix;
+        description
+          "Aggregate prefix.";
+      }
+      leaf summary-only {
+        type boolean;
+        default "false";
+        description
+          "Suppress the more specific routes.";
+      }
+      leaf as-set {
+        type boolean;
+        default "false";
+        description
+          "Generate an AS_SET from the aggregated routes.";
+      }
+    }
+    leaf maximum-paths {
+      type uint16 {
+        range "1..128";
+      }
+      description
+        "eBGP multipath.";
+    }
+    leaf maximum-paths-ibgp {
+      type uint16 {
+        range "1..128";
+      }
+      description
+        "iBGP multipath.";
+    }
+    leaf-list import-vrf {
+      type ttypes:vrf-name;
+      description
+        "Import (leak) the routes of these VRF instances.";
+    }
+  }
+
+  grouping evpn-rd-rt {
+    description
+      "Route distinguisher and route targets.";
+    leaf rd {
+      type ttypes:route-distinguisher;
+      description
+        "Route distinguisher. Unset: auto-derived (router-id:index).";
+    }
+    leaf-list route-target-import {
+      type ttypes:route-target;
+      description
+        "Import route targets. Unset: auto-derived (AS:VNI).";
+    }
+    leaf-list route-target-export {
+      type ttypes:route-target;
+      must "not(starts-with(., '*'))" {
+        error-message "wildcard route targets are only valid for import";
+      }
+      description
+        "Export route targets. Unset: auto-derived (AS:VNI).";
+    }
+  }
+
+  container bgp {
+    description
+      "FRR bgpd.";
+
+    list community-list {
+      key "name";
+      description
+        "BGP community lists ('bgp community-list').";
+      leaf name {
+        type ttypes:object-name;
+        description
+          "List name.";
+      }
+      leaf type {
+        type enumeration {
+          enum standard {
+            description
+              "Values are communities.";
+          }
+          enum expanded {
+            description
+              "Values are regular expressions.";
+          }
+        }
+        default "standard";
+        description
+          "List type.";
+      }
+      list entry {
+        key "sequence";
+        min-elements 1;
+        description
+          "Ordered entries.";
+        leaf sequence {
+          type uint32 {
+            range "1..4294967295";
+          }
+          description
+            "Sequence number.";
+        }
+        leaf action {
+          type action;
+          mandatory true;
+          description
+            "Action on match.";
+        }
+        leaf value {
+          type string {
+            length "1..200";
+            pattern '[A-Za-z0-9 _.:^$*+?()\[\]|-]+';
+          }
+          mandatory true;
+          description
+            "Communities (standard) or regular expression (expanded), for
+             example '65000:100 no-export'.";
+        }
+      }
+    }
+
+    list as-path-list {
+      key "name";
+      description
+        "AS-path access lists ('bgp as-path access-list').";
+      leaf name {
+        type ttypes:object-name;
+        description
+          "List name.";
+      }
+      list entry {
+        key "sequence";
+        min-elements 1;
+        description
+          "Ordered entries.";
+        leaf sequence {
+          type uint32 {
+            range "1..4294967295";
+          }
+          description
+            "Sequence number.";
+        }
+        leaf action {
+          type action;
+          mandatory true;
+          description
+            "Action on match.";
+        }
+        leaf regex {
+          type string {
+            length "1..200";
+            pattern '[0-9 _.^$*+?()\[\]|-]+';
+          }
+          mandatory true;
+          description
+            "AS-path regular expression, for example '^65000_'.";
+        }
+      }
+    }
+
+    list instance {
+      key "vrf";
+      description
+        "BGP instances: 'default' and one per VRF.";
+
+      leaf vrf {
+        type ttypes:vrf-name;
+        description
+          "VRF of the instance; 'default' for the main instance.";
+      }
+      leaf asn {
+        type ttypes:as-number;
+        mandatory true;
+        description
+          "Local AS.";
+      }
+      leaf router-id {
+        type inet:ipv4-address-no-zone;
+        description
+          "Router ID. Unset: chosen by zebra.";
+      }
+      leaf ebgp-requires-policy {
+        type boolean;
+        description
+          "RFC 8212: eBGP routes are dropped without an explicit policy.
+           Unset: FRR default (true).";
+      }
+      leaf default-ipv4-unicast {
+        type boolean;
+        description
+          "Activate IPv4 unicast for every new neighbor. Unset: FRR default
+           (true). Set false in EVPN fabrics.";
+      }
+      leaf log-neighbor-changes {
+        type boolean;
+        description
+          "Log neighbor up/down events.";
+      }
+      leaf bestpath-multipath-relax {
+        type boolean;
+        description
+          "Allow multipath across different neighboring ASes
+           ('bgp bestpath as-path multipath-relax').";
+      }
+      uses timers;
+
+      list peer-group {
+        key "name";
+        description
+          "Peer groups.";
+        leaf name {
+          type ttypes:object-name;
+          description
+            "Peer group name.";
+        }
+        uses neighbor-config;
+      }
+
+      list neighbor {
+        must "remote-as or (peer-group and "
+           + "../peer-group[name = current()/peer-group]/remote-as)" {
+          error-message "a neighbor needs remote-as, directly or from its peer-group";
+        }
+        key "address";
+        description
+          "Neighbors.";
+        leaf address {
+          type union {
+            type inet:ip-address-no-zone;
+            type ttypes:interface-name;
+          }
+          description
+            "Peer address, or an interface name for BGP unnumbered (RFC 5549,
+             IPv6 link-local).";
+        }
+        leaf peer-group {
+          type leafref {
+            path "../../peer-group/name";
+          }
+          description
+            "Peer group of the neighbor.";
+        }
+        uses neighbor-config;
+      }
+
+      container ipv4-unicast {
+        description
+          "IPv4 unicast address family.";
+        uses unicast-af;
+      }
+
+      container ipv6-unicast {
+        description
+          "IPv6 unicast address family.";
+        uses unicast-af;
+      }
+
+      container l2vpn-evpn {
+        description
+          "L2VPN EVPN address family.";
+
+        leaf advertise-all-vni {
+          type boolean;
+          must ". = 'false' or ../../vrf = 'default'" {
+            error-message "advertise-all-vni is only valid in the default instance";
+          }
+          description
+            "Advertise every local L2VNI (EVPN type-2/type-3 routes).";
+        }
+        leaf advertise-default-gw {
+          type boolean;
+          description
+            "Advertise the gateway MAC/IP of the SVIs (centralized routing).";
+        }
+        leaf advertise-svi-ip {
+          type boolean;
+          description
+            "Advertise the SVI IP addresses as type-2 routes.";
+        }
+        container advertise {
+          description
+            "Type-5 (IP prefix) advertisement of this instance's unicast
+             routes (RFC 9136). Set in VRF instances that have an L3VNI.";
+          leaf ipv4-unicast {
+            type boolean;
+            description
+              "Advertise IPv4 unicast routes.";
+          }
+          leaf ipv4-route-map {
+            type ttypes:object-name;
+            must "../ipv4-unicast = 'true'" {
+              error-message "ipv4-route-map requires ipv4-unicast";
+            }
+            description
+              "Route-map filtering the advertised IPv4 routes.";
+          }
+          leaf ipv6-unicast {
+            type boolean;
+            description
+              "Advertise IPv6 unicast routes.";
+          }
+          leaf ipv6-route-map {
+            type ttypes:object-name;
+            must "../ipv6-unicast = 'true'" {
+              error-message "ipv6-route-map requires ipv6-unicast";
+            }
+            description
+              "Route-map filtering the advertised IPv6 routes.";
+          }
+        }
+        uses evpn-rd-rt {
+          description
+            "L3VNI RD/RT of a VRF instance.";
+        }
+
+        list vni {
+          key "vni";
+          description
+            "Per-L2VNI settings (default instance).";
+          leaf vni {
+            type ttypes:vni;
+            description
+              "L2VNI.";
+          }
+          uses evpn-rd-rt;
+          leaf advertise-default-gw {
+            type boolean;
+            description
+              "Advertise the gateway MAC/IP of this VNI's SVI.";
+          }
+          leaf advertise-svi-ip {
+            type boolean;
+            description
+              "Advertise this VNI's SVI IP address.";
+          }
+        }
+      }
+    }
+  }
+}
