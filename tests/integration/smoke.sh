@@ -8,7 +8,6 @@ IMAGE="${1:?usage: smoke.sh <image>}"
 NAME="tarvos-smoke-$$"
 SSH_HOST_PORT="${SSH_HOST_PORT:-2222}"
 NETCONF_HOST_PORT="${NETCONF_HOST_PORT:-8300}"
-YANG_SRC="$(cd "$(dirname "$0")/../.." && pwd)/yang"
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
 
 cleanup() {
@@ -24,7 +23,7 @@ docker run -d --name "${NAME}" \
     --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN \
     --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
     -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" \
-    -v "${YANG_SRC}:/opt/tarvos/yangs:ro" \
+    -e "FRR_DAEMONS=[zebra, bgpd]" \
     "${IMAGE}" >/dev/null
 
 netconf_hello() {
@@ -73,6 +72,7 @@ echo "== FRR health"
 docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting' || fail "vtysh failed"
 docker exec "${NAME}" pgrep -x zebra >/dev/null || fail "zebra not running"
 docker exec "${NAME}" pgrep -x bgpd >/dev/null || fail "bgpd not running"
+docker exec "${NAME}" pgrep -x ospfd >/dev/null && fail "ospfd running but not selected in FRR_DAEMONS"
 
 echo "== LLDP (lldpd running, Tarvos configuration applied)"
 docker exec "${NAME}" pgrep -x lldpd >/dev/null || fail "lldpd not running"
