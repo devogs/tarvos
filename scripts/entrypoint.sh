@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tarvos container entrypoint (runs under tini as PID 1).
 # Boot order: AAA -> sshd -> YANG registration -> sysrepo-plugind -> netopeer2
-#             -> FRR -> Python backend daemons.
+#             -> LLDP -> FRR -> Python backend daemons.
 # All configuration comes from the environment (see .env.example).
 set -uo pipefail
 
@@ -82,6 +82,16 @@ if [ ! -f "${hostkey_marker}" ]; then
 fi
 "${SCRIPTS_DIR}/netconf_configure.sh" || log "WARNING: NETCONF listener configuration failed"
 start netopeer2-server netopeer2-server -d -v "${DAEMON_VERBOSITY}"
+
+# --- 4b. LLDP (lldpd); optional and never fatal -----------------------------------
+python3 "${SCRIPTS_DIR}/lldp_configure.py"
+lldp_rc=$?
+if [ "${lldp_rc}" -eq 0 ]; then
+    mkdir -p /run/lldpd
+    start lldpd /usr/sbin/lldpd -d
+elif [ "${lldp_rc}" -ne 10 ]; then
+    log "WARNING: LLDP configuration failed"
+fi
 
 # --- 5. FRR -----------------------------------------------------------------------
 if [ ! -s /etc/frr/frr.conf ]; then

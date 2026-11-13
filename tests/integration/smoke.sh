@@ -74,6 +74,14 @@ docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting' || fail "vty
 docker exec "${NAME}" pgrep -x zebra >/dev/null || fail "zebra not running"
 docker exec "${NAME}" pgrep -x bgpd >/dev/null || fail "bgpd not running"
 
+echo "== LLDP (lldpd running, Tarvos configuration applied)"
+docker exec "${NAME}" pgrep -x lldpd >/dev/null || fail "lldpd not running"
+lldp_conf="$(docker exec "${NAME}" lldpcli show running-configuration)"
+grep -Eq 'Transmit delay:[[:space:]]+30' <<<"${lldp_conf}" || {
+    echo "${lldp_conf}" >&2
+    fail "lldpd did not apply /etc/lldpd.d/tarvos.conf"
+}
+
 mem="$(docker stats --no-stream --format '{{.MemUsage}}' "${NAME}" | awk '{print $1}')"
 printf 'BOOT_SECONDS=%s\nMEM_USAGE=%s\n' "${boot_seconds}" "${mem}" >metrics.env
 echo "PASS (boot ${boot_seconds}s, mem ${mem})"

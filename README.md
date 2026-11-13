@@ -20,6 +20,7 @@ Debian bookworm-slim + FRRouting + Sysrepo/Netopeer2 (NETCONF) + OpenSSH, with T
 - **Routing:** FRRouting (BGP, OSPF, IS-IS, BFD) ready for BGP EVPN labs.
 - **Model-driven management:** NETCONF through Sysrepo/Netopeer2, with YANG modules loaded dynamically from `/opt/tarvos/yangs`.
 - **AAA:** TACACS+ with ordered failover and a local break-glass `admin`.
+- **Discovery:** LLDP (lldpd) advertises the node and lists neighbours with `lldpcli show neighbors`.
 - **Isolated management plane:** `eth0` lives in VRF `mgmt` by default.
 - **Observability:** rsyslog to stdout, optional forwarding to remote collectors.
 - **Small and fast:** about 64 MB compressed, boots in under 10 s, uses about 35 MiB of RAM.
@@ -52,6 +53,7 @@ Custom YANG modules mounted at `/opt/tarvos/yangs` are registered in Sysrepo at 
 | `SYSLOG_SERVER`, `SYSLOG_PORT`, `SYSLOG_PROTOCOL`, `SYSLOG_MIN_SEVERITY` | Optional remote syslog forwarding (logs always go to stdout too) |
 | `MGMT_VRF_ENABLED`, `MGMT_VRF_NAME`, `MGMT_VRF_TABLE`, `MGMT_INTERFACE` | Management VRF (default: `eth0` in VRF `mgmt`) |
 | `TACACS_NETCONF_ACCESS` | NETCONF rights of TACACS+ users: `ro` (default), `rw` or `none` |
+| `LLDP_ENABLED`, `LLDP_INTERFACES`, `LLDP_TX_INTERVAL`, `LLDP_TX_HOLD`, `LLDP_SYSTEM_NAME`, `LLDP_SYSTEM_DESCRIPTION` | LLDP neighbour discovery (lldpd, on by default on every interface; `LLDP_INTERFACES` is an lldpd pattern such as `eth*,!eth0`). Inspect with `lldpcli show neighbors` |
 | `SSH_PORT`, `NETCONF_PORT`, `LOG_LEVEL`, `YANG_DIR` | Runtime parameters |
 
 ## Security notes
