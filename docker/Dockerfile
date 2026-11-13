@@ -40,7 +40,13 @@ RUN git clone --depth 1 --branch "${SYSREPO_VERSION}" https://github.com/sysrepo
         -DREPO_PATH=/var/lib/sysrepo \
     && cmake --build sysrepo/build -j"$(nproc)" && cmake --install sysrepo/build && ldconfig
 
+# Patch: in system-users mode, upstream checks the SSH "password" method against /etc/shadow
+# only (PAM is used for keyboard-interactive alone). Clients such as ncclient/paramiko use
+# "password", so TACACS+ users could not log in. The patch routes it through the same PAM
+# service (netopeer2.conf).
+COPY docker/patches/libnetconf2-password-pam.patch /src/patches/
 RUN git clone --depth 1 --branch "${LIBNETCONF2_VERSION}" https://github.com/CESNET/libnetconf2.git \
+    && git -C libnetconf2 apply /src/patches/libnetconf2-password-pam.patch \
     && cmake -S libnetconf2 -B libnetconf2/build -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF \
     && cmake --build libnetconf2/build -j"$(nproc)" && cmake --install libnetconf2/build && ldconfig
 
