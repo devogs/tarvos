@@ -49,8 +49,10 @@ fi
 
 # Outbound connections (syslog, TACACS+) from sockets not bound to the VRF only consult
 # the main table, which no longer holds the management routes: fall through to them.
-ip -4 rule show | grep -q "lookup ${TABLE}" || ip -4 rule add pref 32765 lookup "${TABLE}" || log "WARNING: IPv4 fallback rule not added"
-ip -6 rule show | grep -q "lookup ${TABLE}" || ip -6 rule add pref 32765 lookup "${TABLE}" 2>/dev/null || true
+# The rule comes after main (32766) and default (32767): the management table has a
+# default route, so placing it earlier would send all routed traffic out of ${IFACE}.
+ip -4 rule show | grep -q "lookup ${TABLE}" || ip -4 rule add pref 32800 lookup "${TABLE}" || log "WARNING: IPv4 fallback rule not added"
+ip -6 rule show | grep -q "lookup ${TABLE}" || ip -6 rule add pref 32800 lookup "${TABLE}" 2>/dev/null || true
 
 # Let daemons that are not VRF-aware (sshd, netopeer2) accept connections arriving in the VRF.
 for key in net.ipv4.tcp_l3mdev_accept net.ipv4.udp_l3mdev_accept; do

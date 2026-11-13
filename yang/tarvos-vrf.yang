@@ -1,0 +1,68 @@
+module tarvos-vrf {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-vrf";
+  prefix tvrf;
+
+  import tarvos-types {
+    prefix ttypes;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "Linux VRF devices (kernel side of tenant isolation).
+
+     FRR zebra uses VRF devices but does not create them. Devices created here
+     are owned by Tarvos (tagged with the 'tarvos' interface alias) and removed
+     when deleted from the configuration. Routing inside a VRF is configured
+     with FRR's native frr-vrf / frr-zebra modules (for example the L3VNI) and
+     the per-VRF instances of tarvos-bgp, tarvos-ospf and tarvos-isis.
+
+     The management VRF (MGMT_VRF_NAME, MGMT_VRF_TABLE) is reserved.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-13 {
+    description
+      "Initial revision.";
+  }
+
+  container vrfs {
+    description
+      "Kernel VRF devices.";
+
+    list vrf {
+      key "name";
+      unique "table";
+      description
+        "A VRF device.";
+      leaf name {
+        type ttypes:vrf-name {
+          pattern 'default' {
+            modifier invert-match;
+            error-message "'default' is the main routing table, not a VRF device";
+          }
+        }
+        description
+          "VRF device name.";
+      }
+      leaf table {
+        type uint32 {
+          range "1..252 | 256..4294967294";
+        }
+        mandatory true;
+        description
+          "Kernel routing table of the VRF (253-255 are reserved by Linux).";
+      }
+      leaf-list interface {
+        type ttypes:interface-name;
+        description
+          "Interfaces enslaved to the VRF (routed ports). Bridges and VXLAN
+           devices created by tarvos-vxlan are placed in their VRF
+           automatically.";
+      }
+    }
+  }
+}

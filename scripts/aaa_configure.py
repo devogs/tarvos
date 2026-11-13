@@ -25,7 +25,7 @@ TACACS_USER = "tacacs"
 TACACS_UID = 1001
 TACACS_GID = 1001
 MAX_SERVERS = 4
-# Built from source (not packaged in bookworm), so referenced by absolute path.
+# Built from source (not packaged in Debian trixie), so referenced by absolute path.
 PAM_TACPLUS_MODULE = "/usr/local/lib/security/pam_tacplus.so"
 
 _SECRET_RE = re.compile(r"^[\x21-\x7e]{1,128}$")  # printable ASCII, no whitespace

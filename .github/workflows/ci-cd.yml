@@ -96,6 +96,15 @@ jobs:
           tests/integration/smoke.sh "$LOCAL_TAG"
           tests/integration/tacacs.sh "$LOCAL_TAG"
 
+      - name: BGP EVPN lab (two leaves, configured over NETCONF)
+        run: |
+          # VRF and VXLAN devices live in the host kernel.
+          sudo modprobe vrf vxlan || {
+            sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
+            sudo modprobe vrf vxlan
+          }
+          tests/integration/evpn.sh "$LOCAL_TAG"
+
       - name: Baseline metrics (informational, no caps)
         if: always()
         run: |

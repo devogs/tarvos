@@ -2,9 +2,10 @@
 
 # ---------------------------------------------------------------------------
 # Builder: libyang, libnetconf2, sysrepo, netopeer2 and the Python bindings.
-# Debian bookworm ships none of them, so they are built from pinned releases.
+# Debian trixie ships none of them at the required versions, so they are built from pinned
+# releases. FRR itself comes from the official FRR repository (runtime stage).
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS builder
+FROM debian:trixie-slim AS builder
 
 ARG LIBYANG_VERSION=v5.8.6
 ARG LIBNETCONF2_VERSION=v4.4.10
@@ -15,6 +16,9 @@ ARG LIBYANG_PY_VERSION=5.0.0
 ARG PYROUTE2_VERSION=0.7.12
 ARG PAM_TACPLUS_VERSION=v1.7.0
 ARG LIBNSS_ATO_VERSION=v0.2.0
+# Must match FRR_VERSION in the runtime stage: the FRR YANG modules loaded into Sysrepo are
+# taken from the same release tag, so NETCONF serves exactly the schema mgmtd implements.
+ARG FRR_TAG=frr-10.7.1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SYSREPO_REPOSITORY_PATH=/var/lib/sysrepo \
@@ -26,8 +30,9 @@ RUN apt-get update \
         build-essential cmake git ca-certificates pkg-config \
         libpcre2-dev libssl-dev libssh-dev libpam0g-dev libcurl4-openssl-dev \
         python3 python3-dev python3-venv libffi-dev \
-        autoconf automake libtool gnulib \
-    && rm -rf /var/lib/apt/lists/*
+        autoconf automake libtool gnulib curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deb.frrouting.org/frr/keys.gpg -o /usr/share/keyrings/frrouting.gpg
 
 WORKDIR /src
 
@@ -68,7 +73,28 @@ RUN printf '%s\n' '<netconf-server xmlns="urn:ietf:params:xml:ns:yang:ietf-netco
         -d local-user-auth-publickey -d local-user-auth-password -d local-user-auth-none \
         -d local-users-supported
 
-# Neither pam_tacplus nor libnss-ato is packaged in Debian bookworm.
+# FRR's native YANG modules, from the FRR release tag (the FRR packages embed them in the
+# binaries and do not install the .yang files). Data modules:
+# * mgmtd backends (pushed to mgmtd by frr_sync): frr-interface, frr-vrf, frr-routing,
+#   frr-affinity-map, frr-zebra, frr-staticd, frr-ripd, frr-ripngd;
+# * rendered through vtysh by frr_sync (their daemons are not mgmtd backends):
+#   frr-filter, frr-route-map, frr-bgp-route-map, frr-bfdd.
+# Imports (frr-nexthop, ietf-routing-types, ...) are pulled in by sysrepoctl automatically.
+ENV FRR_YANG_DIR=/usr/local/share/yang/frr
+RUN git clone --depth 1 --branch "${FRR_TAG}" --filter=blob:none --sparse \
+        https://github.com/FRRouting/frr.git frr \
+    && git -C frr sparse-checkout set yang \
+    && mkdir -p "${FRR_YANG_DIR}" \
+    && cp frr/yang/*.yang frr/yang/ietf/*.yang "${FRR_YANG_DIR}/" \
+    && set -- \
+    && for m in frr-interface frr-vrf frr-routing frr-affinity-map frr-zebra frr-staticd \
+                frr-ripd frr-ripngd frr-filter frr-route-map frr-bgp-route-map frr-bfdd; do \
+           set -- "$@" -i "${FRR_YANG_DIR}/${m}.yang"; \
+       done \
+    && sysrepoctl -s "${FRR_YANG_DIR}" "$@" \
+    && sysrepoctl -l
+
+# Neither pam_tacplus nor libnss-ato is packaged in Debian trixie.
 # The PAM module lands in /usr/local/lib/security/pam_tacplus.so.
 # gl_PREREQ_EXPLICIT_BZERO no longer exists in gnulib; it only matters for libcs
 # without explicit_bzero, and glibc has it.
@@ -95,19 +121,29 @@ RUN python3 -m venv /opt/venv \
 # ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
+
+# Official FRR packages (deb.frrouting.org), pinned to one release.
+ARG FRR_VERSION=10.7.1-0~deb13u1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SYSREPO_REPOSITORY_PATH=/var/lib/sysrepo \
     PATH=/opt/venv/bin:$PATH \
     YANG_DIR=/opt/tarvos/yangs
 
+COPY --from=builder /usr/share/keyrings/frrouting.gpg /usr/share/keyrings/frrouting.gpg
+
 # hadolint ignore=DL3008
 RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && echo "deb [signed-by=/usr/share/keyrings/frrouting.gpg] https://deb.frrouting.org/frr trixie frr-10.7" \
+        >/etc/apt/sources.list.d/frr.list \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
-        tini frr openssh-server libpam-modules rsyslog lldpd \
+        "frr=${FRR_VERSION}" "frr-pythontools=${FRR_VERSION}" \
+        tini openssh-server libpam-modules rsyslog lldpd \
         nftables iproute2 python3 \
-        libpcre2-8-0 libssl3 libssh-4 libpam0g libcurl4 \
+        libpcre2-8-0 libssl3t64 libssh-4 libpam0g libcurl4t64 \
         procps ca-certificates \
     && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
 
@@ -127,13 +163,13 @@ RUN ldconfig \
 COPY yang/ /opt/tarvos/yangs-builtin/
 COPY scripts/ /opt/tarvos/scripts/
 COPY daemons/ /opt/tarvos/daemons/
-RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py
+RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py /opt/tarvos/daemons/*.py
 
 EXPOSE 22 830
 VOLUME ["/opt/tarvos/yangs"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["sh", "-c", "pgrep -x sshd && pgrep -x netopeer2-serve && pgrep -x watchfrr"]
+    CMD ["sh", "-c", "pgrep -x sshd && pgrep -x netopeer2-serve && pgrep -x watchfrr && pgrep -f frr_sync.py"]
 
 # The supervisor must run as root: sshd, PAM and netopeer2 need it. FRR daemons
 # drop to the unprivileged "frr" user themselves.

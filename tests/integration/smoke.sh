@@ -50,9 +50,11 @@ echo "== SSH login with admin/admin"
 out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0.1 'echo tarvos-ok')"
 [ "${out}" = "tarvos-ok" ] || fail "SSH login returned: ${out}"
 
-echo "== NETCONF capabilities advertise tarvos modules (ncclient)"
+echo "== NETCONF serves the tarvos and FRR native modules (ncclient)"
 python3 "$(dirname "$0")/netconf_caps.py" 127.0.0.1 "${NETCONF_HOST_PORT}" admin admin \
-    tarvos-nftables tarvos-qos tarvos-aaa tarvos-lldp || {
+    tarvos-nftables tarvos-qos tarvos-aaa tarvos-lldp \
+    tarvos-bgp tarvos-ospf tarvos-isis tarvos-frr tarvos-vrf tarvos-vxlan \
+    frr-interface frr-vrf frr-zebra frr-staticd frr-ripd frr-filter frr-route-map frr-bfdd || {
     docker exec "${NAME}" sysrepoctl -l >&2 || true
     fail "tarvos modules not advertised over NETCONF"
 }
@@ -69,7 +71,8 @@ else
 fi
 
 echo "== FRR health"
-docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting' || fail "vtysh failed"
+docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting 10.7.1' || fail "not FRR 10.7.1"
+docker exec "${NAME}" pgrep -x mgmtd >/dev/null || fail "mgmtd not running"
 docker exec "${NAME}" pgrep -x zebra >/dev/null || fail "zebra not running"
 docker exec "${NAME}" pgrep -x bgpd >/dev/null || fail "bgpd not running"
 docker exec "${NAME}" pgrep -x ospfd >/dev/null && fail "ospfd running but not selected in FRR_DAEMONS"
