@@ -83,12 +83,14 @@ fi
 "${SCRIPTS_DIR}/netconf_configure.sh" || log "WARNING: NETCONF listener configuration failed"
 start netopeer2-server netopeer2-server -d -v "${DAEMON_VERBOSITY}"
 
+lldp_running=0
 # --- 4b. LLDP (lldpd); optional and never fatal -----------------------------------
 python3 "${SCRIPTS_DIR}/lldp_configure.py"
 lldp_rc=$?
 if [ "${lldp_rc}" -eq 0 ]; then
     mkdir -p /run/lldpd
     start lldpd /usr/sbin/lldpd -d
+    lldp_running=1
 elif [ "${lldp_rc}" -ne 10 ]; then
     log "WARNING: LLDP configuration failed"
 fi
@@ -102,7 +104,12 @@ fi
 sed -i -E 's/^(bgpd|ospfd|isisd|bfdd)=no/\1=yes/' /etc/frr/daemons
 /usr/lib/frr/frrinit.sh start >&2 || log "WARNING: FRR failed to start"
 
-# --- 6. Python backend daemons (optional) ----------------------------------------
+# --- 6. Python backend daemons ----------------------------------------------------
+# LLDP: applies tarvos-lldp NETCONF configuration to lldpd and serves its neighbours.
+if [ "${lldp_running}" -eq 1 ]; then
+    start lldp_sync python3 "${DAEMONS_DIR}/lldp_sync.py"
+fi
+# Optional user-selected daemons
 for daemon in ${TARVOS_DAEMONS:-}; do
     case "${daemon}" in
         *[!A-Za-z0-9_.-]*) log "skipping invalid daemon name: ${daemon}" ;;
