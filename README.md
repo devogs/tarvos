@@ -42,7 +42,7 @@ ssh -p 8300 -s admin@localhost netconf
 
 The container needs `NET_ADMIN`, `NET_RAW` and `SYS_ADMIN` (FRR's zebra/bgpd require the last for VRF/netns handling); see `docker-compose.yml`.
 
-Custom YANG modules mounted at `/opt/tarvos/yangs` are registered in Sysrepo at every boot, before Netopeer2 starts.
+The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin`), so no volume is needed. Custom modules mounted at `/opt/tarvos/yangs` are registered as well (and override a built-in of the same name). Registration happens at every boot, before Netopeer2 starts.
 
 ## Configuration (environment, see `.env.example`)
 
@@ -53,6 +53,7 @@ Custom YANG modules mounted at `/opt/tarvos/yangs` are registered in Sysrepo at 
 | `SYSLOG_SERVER`, `SYSLOG_PORT`, `SYSLOG_PROTOCOL`, `SYSLOG_MIN_SEVERITY` | Optional remote syslog forwarding (logs always go to stdout too) |
 | `MGMT_VRF_ENABLED`, `MGMT_VRF_NAME`, `MGMT_VRF_TABLE`, `MGMT_INTERFACE` | Management VRF (default: `eth0` in VRF `mgmt`) |
 | `TACACS_NETCONF_ACCESS` | NETCONF rights of TACACS+ users: `ro` (default), `rw` or `none` |
+| `FRR_DAEMONS` | FRR daemons to start, e.g. `zebra bgpd`, `bgpd,ospfd` or `[zebra, ospfd]` (names: zebra, bgpd, ospfd, ospf6d, ripd, ripngd, isisd, pimd, pim6d, ldpd, nhrpd, eigrpd, babeld, sharpd, pbrd, bfdd, fabricd, vrrpd, pathd, staticd). zebra always runs; empty means zebra only. `staticd` is needed for static routes |
 | `LLDP_ENABLED`, `LLDP_INTERFACES`, `LLDP_TX_INTERVAL`, `LLDP_TX_HOLD`, `LLDP_SYSTEM_NAME`, `LLDP_SYSTEM_DESCRIPTION` | LLDP neighbour discovery (lldpd, on by default on every interface; `LLDP_INTERFACES` is an lldpd pattern such as `eth*,!eth0`). Inspect with `lldpcli show neighbors` or over NETCONF |
 | `SSH_PORT`, `NETCONF_PORT`, `LOG_LEVEL`, `YANG_DIR` | Runtime parameters |
 
@@ -67,7 +68,7 @@ The `tarvos-lldp` module configures lldpd at runtime and reports discovered neig
 | `/lldp/interface[name]/admin-status` | `tx-and-rx` (default), `tx-only`, `rx-only` or `disabled` per interface |
 | `/lldp/neighbors/neighbor` (read-only) | Chassis/port ID, system name and description, management addresses, capabilities, TTL, per local interface |
 
-Settings are only applied when the container runs with `LLDP_ENABLED=yes` and the YANG directory is mounted. Per-interface status for an interface that does not exist yet is accepted but only takes effect once the interface is present and the configuration is re-applied.
+Settings are only applied when the container runs with `LLDP_ENABLED=yes`. Per-interface status for an interface that does not exist yet is accepted but only takes effect once the interface is present and the configuration is re-applied.
 
 ## Security notes
 

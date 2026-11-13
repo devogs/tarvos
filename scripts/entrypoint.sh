@@ -101,7 +101,7 @@ if [ ! -s /etc/frr/frr.conf ]; then
     chown frr:frr /etc/frr/frr.conf
     chmod 640 /etc/frr/frr.conf
 fi
-sed -i -E 's/^(bgpd|ospfd|isisd|bfdd)=no/\1=yes/' /etc/frr/daemons
+"${SCRIPTS_DIR}/frr_configure.sh" || log "WARNING: FRR daemon selection failed"
 /usr/lib/frr/frrinit.sh start >&2 || log "WARNING: FRR failed to start"
 
 # --- 6. Python backend daemons ----------------------------------------------------
