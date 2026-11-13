@@ -1,0 +1,204 @@
+module tarvos-lldp {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-lldp";
+  prefix tlldp;
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "LLDP (IEEE 802.1AB) configuration and discovered neighbours, backed by lldpd.
+
+     Configuration here overrides the LLDP_* environment bootstrap values: a leaf
+     that is not configured keeps its bootstrap value. Neither is applied when the
+     container was started with LLDP_ENABLED=no, since lldpd is then not running.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-13 {
+    description
+      "Initial revision.";
+  }
+
+  typedef interface-name {
+    type string {
+      length "1..15";
+      pattern '[A-Za-z0-9_.:@-]+';
+    }
+    description
+      "Linux network interface name.";
+  }
+
+  container lldp {
+    description
+      "LLDP agent.";
+
+    leaf enabled {
+      type boolean;
+      description
+        "Transmit and process LLDP frames. False pauses the agent without
+         discarding its configuration. Unset: enabled.";
+    }
+
+    leaf tx-interval {
+      type uint16 {
+        range "1..3600";
+      }
+      units "seconds";
+      description
+        "Time between LLDP advertisements. Unset: LLDP_TX_INTERVAL.";
+    }
+
+    leaf tx-hold {
+      type uint8 {
+        range "1..100";
+      }
+      description
+        "Multiplier of tx-interval advertised to neighbours as their holdtime.
+         Unset: LLDP_TX_HOLD.";
+    }
+
+    leaf system-name {
+      type string {
+        length "1..64";
+        pattern '[A-Za-z0-9_.-]+';
+      }
+      description
+        "System name advertised to neighbours. Unset: LLDP_SYSTEM_NAME, then the
+         container hostname.";
+    }
+
+    leaf system-description {
+      type string {
+        length "1..200";
+        pattern '[A-Za-z0-9 _.,:/()+-]+';
+      }
+      description
+        "System description advertised to neighbours. Unset:
+         LLDP_SYSTEM_DESCRIPTION.";
+    }
+
+    leaf interface-pattern {
+      type string {
+        length "1..128";
+        pattern '[A-Za-z0-9_.:*?!,-]+';
+      }
+      description
+        "Interfaces LLDP runs on: comma-separated names or wildcards, with '!'
+         excluding (for example 'eth*,!eth0'). Unset: LLDP_INTERFACES.";
+    }
+
+    list interface {
+      key "name";
+      description
+        "Per-interface LLDP behaviour. Interfaces not listed use tx-and-rx.";
+
+      leaf name {
+        type interface-name;
+        description
+          "Interface name.";
+      }
+
+      leaf admin-status {
+        type enumeration {
+          enum tx-and-rx {
+            description
+              "Send and process LLDP frames.";
+          }
+          enum tx-only {
+            description
+              "Send LLDP frames, ignore received ones.";
+          }
+          enum rx-only {
+            description
+              "Process received LLDP frames, send none.";
+          }
+          enum disabled {
+            description
+              "Neither send nor process LLDP frames.";
+          }
+        }
+        default "tx-and-rx";
+        description
+          "LLDP administrative status of the interface.";
+      }
+    }
+
+    container neighbors {
+      config false;
+      description
+        "Neighbours discovered through LLDP.";
+
+      list neighbor {
+        key "interface chassis-id port-id";
+        description
+          "A remote system seen on a local interface.";
+
+        leaf interface {
+          type interface-name;
+          description
+            "Local interface the neighbour was seen on.";
+        }
+
+        leaf chassis-id {
+          type string;
+          description
+            "Chassis identifier of the neighbour (typically a MAC address).";
+        }
+
+        leaf port-id {
+          type string;
+          description
+            "Port identifier of the neighbour.";
+        }
+
+        leaf port-description {
+          type string;
+          description
+            "Port description of the neighbour.";
+        }
+
+        leaf system-name {
+          type string;
+          description
+            "System name of the neighbour.";
+        }
+
+        leaf system-description {
+          type string;
+          description
+            "System description of the neighbour.";
+        }
+
+        leaf-list management-address {
+          type string;
+          description
+            "Management addresses advertised by the neighbour.";
+        }
+
+        leaf-list capability {
+          type enumeration {
+            enum other;
+            enum repeater;
+            enum bridge;
+            enum wlan;
+            enum router;
+            enum telephone;
+            enum docsis;
+            enum station;
+          }
+          description
+            "Enabled system capabilities of the neighbour.";
+        }
+
+        leaf ttl {
+          type uint16;
+          units "seconds";
+          description
+            "Remaining holdtime advertised by the neighbour.";
+        }
+      }
+    }
+  }
+}

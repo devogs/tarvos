@@ -53,7 +53,7 @@ out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0
 
 echo "== NETCONF capabilities advertise tarvos modules (ncclient)"
 python3 "$(dirname "$0")/netconf_caps.py" 127.0.0.1 "${NETCONF_HOST_PORT}" admin admin \
-    tarvos-nftables tarvos-qos tarvos-aaa || {
+    tarvos-nftables tarvos-qos tarvos-aaa tarvos-lldp || {
     docker exec "${NAME}" sysrepoctl -l >&2 || true
     fail "tarvos modules not advertised over NETCONF"
 }
@@ -73,6 +73,31 @@ echo "== FRR health"
 docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting' || fail "vtysh failed"
 docker exec "${NAME}" pgrep -x zebra >/dev/null || fail "zebra not running"
 docker exec "${NAME}" pgrep -x bgpd >/dev/null || fail "bgpd not running"
+
+echo "== LLDP (lldpd running, Tarvos configuration applied)"
+docker exec "${NAME}" pgrep -x lldpd >/dev/null || fail "lldpd not running"
+lldp_conf="$(docker exec "${NAME}" lldpcli show running-configuration)"
+grep -Eq 'Transmit delay:[[:space:]]+30' <<<"${lldp_conf}" || {
+    echo "${lldp_conf}" >&2
+    fail "lldpd did not apply /etc/lldpd.d/tarvos.conf"
+}
+
+echo "== LLDP configured over NETCONF is applied by lldpd, and removing it restores the default"
+nc_lldp="$(dirname "$0")/netconf_lldp.py"
+python3 "${nc_lldp}" set 127.0.0.1 "${NETCONF_HOST_PORT}" admin admin || fail "cannot set tarvos-lldp over NETCONF"
+for _ in $(seq 1 10); do
+    docker exec "${NAME}" lldpcli show running-configuration | grep -Eq 'Transmit delay:[[:space:]]+7$' && break
+    sleep 1
+done
+docker exec "${NAME}" lldpcli show running-configuration | grep -Eq 'Transmit delay:[[:space:]]+7$' ||
+    fail "lldpd did not apply the NETCONF tx-interval"
+python3 "${nc_lldp}" clear 127.0.0.1 "${NETCONF_HOST_PORT}" admin admin || fail "cannot clear tarvos-lldp over NETCONF"
+for _ in $(seq 1 10); do
+    docker exec "${NAME}" lldpcli show running-configuration | grep -Eq 'Transmit delay:[[:space:]]+30$' && break
+    sleep 1
+done
+docker exec "${NAME}" lldpcli show running-configuration | grep -Eq 'Transmit delay:[[:space:]]+30$' ||
+    fail "lldpd did not return to the bootstrap tx-interval"
 
 mem="$(docker stats --no-stream --format '{{.MemUsage}}' "${NAME}" | awk '{print $1}')"
 printf 'BOOT_SECONDS=%s\nMEM_USAGE=%s\n' "${boot_seconds}" "${mem}" >metrics.env
