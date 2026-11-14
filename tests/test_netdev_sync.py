@@ -111,3 +111,61 @@ def test_plan_refuses_foreign_device_and_waits_for_missing_ports():
         plan(_desired(), [_link("br100", "bridge")], {})
     _, warnings = plan(_desired(), [], {})
     assert any("eth2 does not exist yet" in w for w in warnings)
+
+
+# -- operational state (fixtures: leaf1 of tests/integration/evpn.sh) ------------------
+
+_KERNEL = __import__("pathlib").Path(__file__).parent / "fixtures" / "kernel"
+
+
+def _fixture(name):
+    return __import__("json").loads((_KERNEL / name).read_text())
+
+
+def test_vrf_state():
+    from netdev_sync import vrf_state
+
+    vrfs = {"vrfs": {"vrf": [{"name": "RED", "table": 1010}, {"name": "BLUE", "table": 20}]}}
+    data = vrf_state(vrfs, _fixture("ip_link_all.json"))
+    red, blue = data["vrfs"]["vrf"]
+    assert red == {
+        "name": "RED",
+        "state": {"oper-status": "up", "table": 1010, "member": ["br100", "br5000", "red1"]},
+    }
+    assert blue == {"name": "BLUE", "state": {"oper-status": "not-present"}}
+    assert vrf_state({}, []) == {}
+
+
+def test_vxlan_state():
+    from netdev_sync import vxlan_state
+
+    data = vxlan_state(VXLAN, _fixture("ip_link_all.json"), _fixture("bridge_fdb.json"))
+    (l2,) = data["vxlan"]["l2vni"]
+    (l3,) = data["vxlan"]["l3vni"]
+    assert l2 == {
+        "vni": 100,
+        "state": {
+            "oper-status": "up",
+            "vxlan-interface": "vx100",
+            "bridge": "br100",
+            "local-vtep": "10.255.0.1",
+            "remote-vtep": ["10.255.0.2"],
+            "remote-mac-count": 3,
+            "member": ["eth2", "vx100"],
+        },
+    }
+    assert l3["state"]["oper-status"] == "up" and l3["state"]["bridge"] == "br5000"
+    missing = vxlan_state({"vxlan": {"l2vni": [{"vni": 200}]}}, [], [])
+    assert missing == {"vxlan": {"l2vni": [{"vni": 200, "state": {"oper-status": "not-present"}}]}}
+
+
+def test_oper_callbacks_have_the_sysrepo_signature(monkeypatch):
+    # sysrepo-python refuses callbacks that do not take (xpath, private_data).
+    import netdev_sync
+
+    monkeypatch.setattr(netdev_sync, "_ip_json", lambda *a: _fixture("ip_link_all.json"))
+    monkeypatch.setattr(netdev_sync, "fdb_state", lambda: _fixture("bridge_fdb.json"))
+    agent = netdev_sync.Agent()
+    agent.data = {"tarvos-vrf": VRFS, "tarvos-vxlan": VXLAN}
+    for _module, xpath, method in netdev_sync.OPER_XPATHS:
+        assert getattr(agent, method)(xpath, None)

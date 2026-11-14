@@ -33,6 +33,10 @@ module tarvos-vxlan {
 
      Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
 
+  revision 2026-11-14 {
+    description
+      "Operational state of each VNI.";
+  }
   revision 2026-11-13 {
     description
       "Initial revision.";
@@ -104,6 +108,61 @@ module tarvos-vxlan {
         description
           "ARP/ND suppression on the VXLAN port.";
       }
+
+      container state {
+        config false;
+        description
+          "Kernel state of the VNI (bridge 'br<vni>' and VXLAN 'vx<vni>').";
+        leaf oper-status {
+          type enumeration {
+            enum up {
+              description
+                "The device exists and is up.";
+            }
+            enum down {
+              description
+                "The device exists but is down.";
+            }
+            enum not-present {
+              description
+                "The device does not exist (yet).";
+            }
+          }
+          description
+            "State of the VXLAN device.";
+        }
+        leaf vxlan-interface {
+          type ttypes:interface-name;
+          description
+            "VXLAN device of the VNI.";
+        }
+        leaf bridge {
+          type ttypes:interface-name;
+          description
+            "Bridge of the VNI.";
+        }
+        leaf local-vtep {
+          type inet:ipv4-address-no-zone;
+          description
+            "Source address of the VXLAN device.";
+        }
+        leaf-list remote-vtep {
+          type inet:ipv4-address-no-zone;
+          description
+            "Remote VTEPs in the forwarding database of the VXLAN device
+             (installed by FRR from EVPN routes).";
+        }
+        leaf remote-mac-count {
+          type yang:gauge32;
+          description
+            "MAC addresses reachable through a remote VTEP.";
+        }
+        leaf-list member {
+          type ttypes:interface-name;
+          description
+            "Ports of the bridge (the VXLAN device and access interfaces).";
+        }
+      }
     }
 
     list l3vni {
@@ -126,6 +185,61 @@ module tarvos-vxlan {
         mandatory true;
         description
           "VRF routed over this VNI.";
+      }
+
+      container state {
+        config false;
+        description
+          "Kernel state of the VNI (bridge 'br<vni>' and VXLAN 'vx<vni>').";
+        leaf oper-status {
+          type enumeration {
+            enum up {
+              description
+                "The device exists and is up.";
+            }
+            enum down {
+              description
+                "The device exists but is down.";
+            }
+            enum not-present {
+              description
+                "The device does not exist (yet).";
+            }
+          }
+          description
+            "State of the VXLAN device.";
+        }
+        leaf vxlan-interface {
+          type ttypes:interface-name;
+          description
+            "VXLAN device of the VNI.";
+        }
+        leaf bridge {
+          type ttypes:interface-name;
+          description
+            "Bridge of the VNI.";
+        }
+        leaf local-vtep {
+          type inet:ipv4-address-no-zone;
+          description
+            "Source address of the VXLAN device.";
+        }
+        leaf-list remote-vtep {
+          type inet:ipv4-address-no-zone;
+          description
+            "Remote VTEPs in the forwarding database of the VXLAN device
+             (installed by FRR from EVPN routes).";
+        }
+        leaf remote-mac-count {
+          type yang:gauge32;
+          description
+            "MAC addresses reachable through a remote VTEP.";
+        }
+        leaf-list member {
+          type ttypes:interface-name;
+          description
+            "Ports of the bridge (the VXLAN device and access interfaces).";
+        }
       }
     }
   }
