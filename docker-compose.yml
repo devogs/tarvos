@@ -13,6 +13,7 @@ services:
     ports:
       - "2222:22"
       - "8300:830"
+      - "9273:9273"
     cap_drop:
       - ALL
     cap_add:
