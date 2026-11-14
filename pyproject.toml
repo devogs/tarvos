@@ -13,6 +13,7 @@ select = ["E", "F", "I", "B", "S", "UP"]
 "daemons/nft_sync.py" = ["S603", "S607"]
 "daemons/qos_sync.py" = ["S603", "S607"]
 "daemons/tarvos_frr/vtysh.py" = ["S603", "S607"]
+"docs/grafana/generate.py" = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = ["scripts", "daemons", "tests/integration"]

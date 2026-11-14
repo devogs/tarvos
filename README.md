@@ -27,6 +27,7 @@ Debian trixie-slim + FRRouting 10.7.1 (official packages, mgmtd) + Sysrepo/Netop
 - **Troubleshooting toolbox:** `ping`, `traceroute`, `mtr`, `tracepath`, `dig`, `tcpdump`, `curl`, `nc`, `iperf3` and more, usable in any VRF with `vrfexec <vrf> <command>`, as root or as an SSH user.
 - **Observability:** operational state over NETCONF for every model (BGP sessions, EVPN VNIs and routes, VRF/VXLAN devices, PIM/LDP/VRRP/BFD sessions, tc and CoPP counters, TACACS+ reachability), rsyslog to stdout with optional forwarding to remote collectors.
 - **eBPF telemetry:** per-interface traffic, packet sizes and drops by reason, per-VNI VXLAN counters and control-plane packet counters, collected in the kernel and exported to Prometheus (`/metrics`, port 9273).
+- **Per-node metrics:** the container's own CPU, memory and PIDs (from its cgroup, never the host's), each daemon's resources, the eBPF cost, BGP/EVPN health and QoS/CoPP/AAA counters on the same endpoint, with a Grafana dashboard.
 - **QoS and CoPP over NETCONF:** tc shaping and DSCP classes (`tarvos-qos`), nftables control-plane policing (`tarvos-nftables`).
 - **Small and fast:** about 100 MB compressed, boots in under 10 s, about 115 MiB of RAM with bgpd and telemetry (FRR 10.7 always runs mgmtd, zebra and staticd).
 
@@ -62,6 +63,9 @@ The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin
 | `TACACS_NETCONF_ACCESS` | NETCONF rights of TACACS+ users: `ro` (default), `rw` or `none` |
 | `FRR_DAEMONS` | FRR daemons to start, e.g. `bgpd`, `bgpd,bfdd` or `[bgpd, ospfd]` (names: bgpd, ospfd, ospf6d, ripd, ripngd, isisd, pimd, pim6d, ldpd, nhrpd, eigrpd, babeld, sharpd, pbrd, bfdd, fabricd, vrrpd, pathd). mgmtd, zebra and staticd always run. NETCONF configuration for a daemon that is not running is refused |
 | `LLDP_ENABLED`, `LLDP_INTERFACES`, `LLDP_TX_INTERVAL`, `LLDP_TX_HOLD`, `LLDP_SYSTEM_NAME`, `LLDP_SYSTEM_DESCRIPTION` | LLDP neighbour discovery (lldpd, on by default on every interface; `LLDP_INTERFACES` is an lldpd pattern such as `eth*,!eth0`). Inspect with `lldpcli show neighbors` or over NETCONF |
+| `TELEMETRY_ENABLED`, `TELEMETRY_EXCLUDE`, `TELEMETRY_SYNC_INTERVAL`, `TELEMETRY_LISTEN_VRF` | eBPF telemetry agent, see [eBPF telemetry](#ebpf-telemetry) |
+| `PROMETHEUS_ENABLED`, `PROMETHEUS_PORT`, `PROMETHEUS_ROUTING_METRICS`, `PROMETHEUS_KERNEL_METRICS`, `PROMETHEUS_STATE_CACHE` | `/metrics` endpoint and which series it serves, see [Prometheus](#prometheus) |
+| `GNMI_ENABLED`, `GNMI_PORT`, `GNMI_TLS`, `GNMI_TLS_CERT`, `GNMI_TLS_KEY` | gNMI server, see [gNMI](#gnmi) |
 | `SSH_PORT`, `NETCONF_PORT`, `LOG_LEVEL`, `YANG_DIR` | Runtime parameters |
 
 ## Routing over NETCONF
@@ -177,17 +181,77 @@ Requirements: a kernel with BTF (`/sys/kernel/btf/vmlinux`, standard on current 
 
 ## Prometheus
 
-The telemetry agent serves `/metrics` on `PROMETHEUS_PORT` (9273, `PROMETHEUS_ENABLED=yes`), in the management VRF (`TELEMETRY_LISTEN_VRF` overrides it, `none` listens in every VRF). Each scrape reads one fresh snapshot from the agent.
+The telemetry agent serves `/metrics` on `PROMETHEUS_PORT` (9273, `PROMETHEUS_ENABLED=yes`), in the management VRF (`TELEMETRY_LISTEN_VRF` overrides it, `none` listens in every VRF). Each scrape reads one fresh eBPF snapshot and the container's own cgroup and `/proc`. The routing and kernel-feature state is read from the same operational data as NETCONF and gNMI, cached for `PROMETHEUS_STATE_CACHE` seconds (default 10), so the three always agree.
+
+**eBPF counters** (always on):
 
 | Series | Labels |
 |---|---|
 | `tarvos_interface_packets_total`, `tarvos_interface_bytes_total` | `interface`, `direction` |
 | `tarvos_interface_packet_size_bytes` (histogram, buckets 64 ... 9216) | `interface`, `direction` |
-| `tarvos_interface_drops_total` | `interface`, `reason` |
+| `tarvos_interface_drops_total` (kernel drops by reason, kfree_skb) | `interface`, `reason` |
 | `tarvos_vni_packets_total`, `tarvos_vni_bytes_total` | `vni`, `interface`, `direction` |
 | `tarvos_vni_drops_total` | `vni`, `interface` |
 | `tarvos_control_plane_packets_total`, `tarvos_control_plane_bytes_total` | `interface`, `protocol`, `direction` |
 | `tarvos_telemetry_up`, `tarvos_telemetry_info` | `version`, `attach`, `drop_tracing` |
+| `tarvos_telemetry_scrape_duration_seconds`, `tarvos_telemetry_snapshot_age_seconds` | |
+
+**Node and kernel** (`PROMETHEUS_KERNEL_METRICS=yes`, default). Container values come from the container's own cgroup: `/proc/meminfo` and `/proc/stat` show the host, the same on every node, and are never used. cgroup v2 is read (also with `--cgroupns=host`, through `/proc/self/cgroup`); cgroup v1 gives CPU, usage, anon/file and PIDs.
+
+| Series | Labels |
+|---|---|
+| `tarvos_container_cpu_seconds_total` | |
+| `tarvos_container_memory_bytes` | `type`: `usage`, `anon`, `file`, `kernel`, `slab` |
+| `tarvos_container_memory_limit_bytes` (absent when unlimited), `tarvos_container_pids` | |
+| `tarvos_process_resident_memory_bytes`, `tarvos_process_cpu_seconds_total`, `tarvos_process_count` | `process`: FRR daemons, `netopeer2-server`, `sysrepo-plugind`, `sshd`, `lldpd`, `rsyslogd`, `frr_sync`, `netdev_sync`, `kernel_sync`, `lldp_sync`, `tarvos-telemetry`, `tini`, `entrypoint`, `other` |
+| `tarvos_ebpf_map_memory_bytes` | `map` |
+| `tarvos_ebpf_programs` | `type` |
+| `tarvos_ebpf_attached_interfaces` | |
+| `tarvos_ebpf_program_run_seconds_total`, `tarvos_ebpf_program_runs_total` (only when the host sets `kernel.bpf_stats_enabled=1`; Tarvos never changes it) | `program` |
+| `tarvos_interface_up` | `interface`, `kind` |
+| `tarvos_interface_mtu_bytes`, `tarvos_interface_speed_bits` (physical links only) | `interface` |
+| `tarvos_interface_netdev_errors_total`, `tarvos_interface_netdev_dropped_total` (kernel netdev counters) | `interface`, `direction` |
+| `tarvos_node_uptime_seconds` | |
+| `tarvos_build_info` | `version`, `frr_version` |
+| `tarvos_qos_class_packets_total`, `tarvos_qos_class_bytes_total`, `tarvos_qos_class_drops_total`, `tarvos_qos_class_overlimits_total` | `interface`, `class` (id or `default`) |
+| `tarvos_qos_qdisc_packets_total`, `tarvos_qos_qdisc_bytes_total`, `tarvos_qos_qdisc_drops_total`, `tarvos_qos_qdisc_overlimits_total` | `interface`, `kind` |
+| `tarvos_copp_active` | |
+| `tarvos_copp_matched_packets_total`, `tarvos_copp_matched_bytes_total`, `tarvos_copp_dropped_packets_total`, `tarvos_copp_dropped_bytes_total` | `rule` |
+| `tarvos_aaa_server_reachable`, `tarvos_aaa_server_response_seconds` | `server` |
+| `tarvos_aaa_authentications_total` | `method` (`tacacs`, `local`), `result` |
+| `tarvos_lldp_neighbors` | `interface` |
+
+**Routing** (`PROMETHEUS_ROUTING_METRICS=yes`, default):
+
+| Series | Labels |
+|---|---|
+| `tarvos_bgp_neighbors` | `vrf`, `state` (`configured`, `established`) |
+| `tarvos_bgp_neighbor_up` | `vrf`, `neighbor`, `remote_as` |
+| `tarvos_bgp_neighbor_uptime_seconds`, `tarvos_bgp_session_resets_total`, `tarvos_bgp_session_established_total` | `vrf`, `neighbor` |
+| `tarvos_bgp_prefixes_received`, `tarvos_bgp_prefixes_sent` | `vrf`, `neighbor`, `afi_safi` |
+| `tarvos_bgp_messages_total` | `vrf`, `neighbor`, `direction`, `type` (`all`, `update`, `notification`) |
+| `tarvos_evpn_routes` | `route_type` (1-5) |
+| `tarvos_evpn_vni_info` (value 1) | `vni`, `type`, `vrf`, `interface` |
+| `tarvos_evpn_vni_macs`, `tarvos_evpn_vni_arp_nd`, `tarvos_evpn_vni_remote_vteps` | `vni` |
+| `tarvos_pim_neighbors` | `interface` |
+| `tarvos_ldp_neighbor_up` | `lsr_id` |
+| `tarvos_vrrp_master`, `tarvos_vrrp_transitions_total` | `interface`, `vrid`, `afi` |
+| `tarvos_bfd_peer_up` | `vrf`, `peer` |
+| `tarvos_telemetry_state_up`, `tarvos_telemetry_state_age_seconds` | `source` (`routing`, `kernel`) |
+
+PIM, LDP, VRRP and BFD series exist while their daemon runs. When a state source cannot be read, `tarvos_telemetry_state_up{source}` is 0 and that source's series are absent: stale values are never served as current.
+
+**Cardinality.** Labels are bounded by the configuration (interfaces, neighbours, VNIs, rules, classes) and by fixed lists (process names, route types); there is no per-MAC, per-IP or per-route label. EVPN routes are counted per route type; the routes themselves are in NETCONF and gNMI (`/bgp/state/evpn/route`).
+
+**Cost**, agent CPU on a BGP EVPN leaf (eBPF snapshot, cgroup, `/proc` and netlink reads each scrape; the state read every `PROMETHEUS_STATE_CACHE` seconds):
+
+| | Idle | 1 s scrape |
+|---|---|---|
+| 2.1.0 (eBPF counters only) | 0.03 % | 0.37 % |
+| 2.1.1, all series | 0.02 % | 0.71 % |
+| 2.1.1, `PROMETHEUS_ROUTING_METRICS=no`, `PROMETHEUS_KERNEL_METRICS=no` | 0.03 % | same as 2.1.0 |
+
+Idle cost is unchanged. With every series at a 1 s scrape the agent stays within +0.5 percentage point of 2.1.0, and refreshing the state costs the container about 0.5 % more at the default 10 s cache (one `sysrepocfg` read of about 45 ms of CPU, mostly the FRR `show ... json` calls). At a usual 15 s scrape interval the agent cost is below 0.1 %.
 
 ```yaml
 # prometheus.yml
@@ -198,7 +262,11 @@ scrape_configs:
       - targets: ["leaf1:9273", "leaf2:9273", "spine1:9273"]
 ```
 
-Example queries: `rate(tarvos_interface_bytes_total{direction="rx"}[1m]) * 8` (bit/s), `sum by (protocol) (rate(tarvos_control_plane_packets_total[5m]))`, `histogram_quantile(0.9, rate(tarvos_interface_packet_size_bytes_bucket[5m]))`.
+Example queries: `rate(tarvos_interface_bytes_total{direction="rx"}[1m]) * 8` (bit/s), `rate(tarvos_container_cpu_seconds_total[1m])` (CPU cores used by a node), `topk(5, tarvos_process_resident_memory_bytes)`, `sum by (instance) (tarvos_bgp_neighbor_up) < sum by (instance) (tarvos_bgp_neighbors{state="configured"})` (sessions down), `sum by (protocol) (rate(tarvos_control_plane_packets_total[5m]))`.
+
+### Grafana
+
+[`docs/grafana/tarvos.json`](docs/grafana/tarvos.json) is a dashboard built only from these series: per-node CPU and memory (container and daemons), interface throughput, BGP and EVPN health, control-plane packets, drops by reason, QoS and CoPP counters. Import it (Dashboards > New > Import) and pick the Prometheus data source; the `node` variable selects one or more nodes to compare.
 
 ## gNMI
 
@@ -210,7 +278,7 @@ The telemetry agent also serves gNMI on `GNMI_PORT` (57400, `GNMI_ENABLED=yes`),
   - `Subscribe`: `ONCE`, `POLL` and `STREAM`. `SAMPLE` takes intervals of 1 s and more; `TARGET_DEFINED` means `SAMPLE` every 10 s. `ON_CHANGE` updates within 1 s for agent data and 5 s for Sysrepo data, and reports deleted paths.
 - **Paths:**
   - `/interfaces/interface[name=*]/state` (OpenConfig): `admin-status`, `oper-status`, `mtu`, `ifindex`, and `counters/in-pkts`, `in-octets`, `out-pkts`, `out-octets` from the eBPF counters.
-  - `/telemetry` (`tarvos-telemetry`, model in `telemetry/yang/`): per interface rx/tx with the size histogram and drops by reason, per VNI, control-plane protocols, agent status.
+  - `/telemetry` (`tarvos-telemetry`, model in `telemetry/yang/`): per interface rx/tx with the size histogram and drops by reason, per VNI, control-plane protocols, agent status; `/telemetry/container` (the container's cgroup CPU, memory and PIDs, uptime, and `process[name]` per daemon) and `/telemetry/ebpf` (map memory, programs, attached interfaces), the same values as the Prometheus series.
   - Every other module, read from the Sysrepo operational datastore: configuration and the state described above, such as `/bgp/state` for BGP sessions and EVPN.
   - Unprefixed names are resolved when only one module defines them (`/bgp`); otherwise prefix them (`/frr-interface:lib`).
 - **Authentication:** `username`/`password` metadata, checked through PAM (service `gnmi`, the same stack as NETCONF). Both `admin` and TACACS+ users can log in, and logins appear in `/tarvos-aaa:aaa/state`. `TACACS_NETCONF_ACCESS=none` denies gNMI to TACACS+ users as well.
@@ -223,6 +291,7 @@ $G get --path '/bgp/state/instance[vrf=default]/neighbor[address=172.30.0.12]/se
 $G subscribe --mode once --path /bgp/state/evpn/route-count
 $G subscribe --stream-mode sample --sample-interval 10s --path '/interfaces/interface[name=eth1]/state/counters'
 $G subscribe --stream-mode on-change --path '/interfaces/interface[name=*]/state/oper-status'
+$G get --path /telemetry/container --encoding json_ietf
 ```
 
 ## LLDP over NETCONF

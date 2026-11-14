@@ -15,6 +15,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"github.com/devogs/tarvos/telemetry/internal/agent"
+	"github.com/devogs/tarvos/telemetry/internal/node"
 )
 
 const (
@@ -31,6 +32,9 @@ var LocalKeys = Keys{
 	"/" + telemetry + "/interface/drop-reason":    {"reason"},
 	"/" + telemetry + "/vni":                      {"id"},
 	"/" + telemetry + "/control-plane":            {"interface", "protocol", "direction"},
+	"/" + telemetry + "/container/process":        {"name"},
+	"/" + telemetry + "/ebpf/map":                 {"name"},
+	"/" + telemetry + "/ebpf/program":             {"name"},
 }
 
 // Index is the YANG index written by scripts/yang_index.py.
@@ -94,6 +98,8 @@ type Sources struct {
 	Version string
 	// Sysrepocfg is the sysrepocfg binary.
 	Sysrepocfg string
+	// FS reads the container's cgroup and /proc (zero value: the real root).
+	FS node.FS
 }
 
 // Fetch implements Data.
@@ -110,7 +116,14 @@ func (s *Sources) Fetch(ctx context.Context, root Root) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return Telemetry(snap, s.Version), nil
+		out := Telemetry(snap, s.Version).(map[string]any)
+		if c := Container(s.FS); c != nil {
+			out["container"] = c
+		}
+		if r, ok := s.Agent.(agent.BPFReporter); ok {
+			out["ebpf"] = EBPF(r.BPF())
+		}
+		return out, nil
 	}
 	return s.sysrepo(ctx, string(root))
 }
@@ -287,6 +300,67 @@ func Telemetry(snap *agent.Snapshot, version string) any {
 		if list != nil {
 			out[name] = list
 		}
+	}
+	return out
+}
+
+// Container builds /telemetry/container: the container's cgroup and its daemons.
+func Container(fs node.FS) map[string]any {
+	c, err := fs.Container()
+	if err != nil {
+		return nil
+	}
+	out := map[string]any{
+		"cgroup-version": uint32(c.CgroupVersion), "cpu-seconds": c.CPUSeconds, "pids": c.PIDs,
+	}
+	for k, v := range c.Memory {
+		out["memory-"+k] = v
+	}
+	if c.MemoryLimit > 0 {
+		out["memory-limit"] = c.MemoryLimit
+	}
+	if up, err := fs.Uptime(); err == nil {
+		out["uptime"] = up
+	}
+	if procs, err := fs.Processes(); err == nil {
+		var list []any
+		for _, p := range procs {
+			list = append(list, map[string]any{
+				"name": p.Name, "count": uint32(p.Count), "resident-memory": p.RSSBytes,
+				"cpu-seconds": p.CPUSeconds,
+			})
+		}
+		if list != nil {
+			out["process"] = list
+		}
+	}
+	return out
+}
+
+// EBPF builds /telemetry/ebpf from the agent's eBPF statistics.
+func EBPF(stats agent.BPFStats) map[string]any {
+	names := make([]string, 0, len(stats.Maps))
+	for name := range stats.Maps {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var maps, progs []any
+	for _, name := range names {
+		maps = append(maps, map[string]any{"name": name, "memory": stats.Maps[name]})
+	}
+	for _, p := range stats.Programs {
+		entry := map[string]any{"name": p.Name, "type": p.Type}
+		if stats.RunStats {
+			entry["run-time"], entry["run-count"] = p.RunTimeNS, p.RunCount
+		}
+		progs = append(progs, entry)
+	}
+	out := map[string]any{"attached-interfaces": uint32(stats.AttachedInterfaces), "run-stats": stats.RunStats}
+	if maps != nil {
+		out["map"] = maps
+	}
+	if progs != nil {
+		out["program"] = progs
 	}
 	return out
 }

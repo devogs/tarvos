@@ -1,13 +1,19 @@
 package prom
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devogs/tarvos/telemetry/internal/agent"
+	"github.com/devogs/tarvos/telemetry/internal/node"
+	"github.com/devogs/tarvos/telemetry/internal/state"
 )
 
 type fakeSource struct {
@@ -20,7 +26,7 @@ func (f fakeSource) Snapshot() (*agent.Snapshot, error) { return f.snap, f.err }
 func scrape(t *testing.T, src agent.Source) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	Handler(src, "2.1.0").ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	Handler(&Collector{Source: src, Version: "2.1.0"}).ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	body, _ := io.ReadAll(rec.Result().Body)
 	return string(body)
 }
@@ -68,6 +74,74 @@ func TestMetrics(t *testing.T) {
 func TestAgentFailure(t *testing.T) {
 	body := scrape(t, fakeSource{err: errors.New("down")})
 	if !strings.Contains(body, "tarvos_telemetry_up 0") {
+		t.Error(body)
+	}
+}
+
+func TestNodeAndStateSeries(t *testing.T) {
+	root := t.TempDir()
+	for path, content := range map[string]string{
+		"proc/self/cgroup":             "0::/\n",
+		"sys/fs/cgroup/cpu.stat":       "usage_usec 4000000\n",
+		"sys/fs/cgroup/memory.current": "131072000\n",
+		"sys/fs/cgroup/memory.stat":    "anon 1000\nfile 2000\nkernel 3000\nslab 400\n",
+		"sys/fs/cgroup/memory.max":     "536870912\n",
+		"sys/fs/cgroup/pids.current":   "40\n",
+		"proc/1/stat":                  "1 (tini) S 0 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 1000 10 0\n",
+		"proc/1/cmdline":               "/usr/bin/tini\x00",
+		"proc/uptime":                  "11.00 1.00\n",
+	} {
+		full := filepath.Join(root, path)
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	routing, _ := os.ReadFile("../state/testdata/routing.json")
+	c := &Collector{
+		Source: fakeSource{snap: &agent.Snapshot{Time: time.Now()}}, Version: "2.1.1", FRRVersion: "10.7.1",
+		FS: node.FS{Root: root}, Node: true,
+		State: &state.Fetcher{Routing: true, TTL: time.Minute,
+			Read: func(context.Context, string) ([]byte, error) { return routing, nil }},
+	}
+	rec := httptest.NewRecorder()
+	Handler(c).ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body, _ := io.ReadAll(rec.Result().Body)
+	for _, want := range []string{
+		`tarvos_container_cpu_seconds_total 4`,
+		`tarvos_container_memory_bytes{type="usage"} 1.31072e+08`,
+		`tarvos_container_memory_limit_bytes 5.36870912e+08`,
+		`tarvos_container_pids 40`,
+		`tarvos_process_count{process="tini"} 1`,
+		`tarvos_node_uptime_seconds 10`,
+		`tarvos_build_info{frr_version="10.7.1",version="2.1.1"} 1`,
+		`tarvos_telemetry_state_up{source="routing"} 1`,
+		`tarvos_bgp_neighbor_up{neighbor="172.30.0.12",remote_as="65000",vrf="default"} 1`,
+		`tarvos_evpn_routes{route_type="3"} 2`,
+		`tarvos_telemetry_scrape_duration_seconds`,
+		`tarvos_telemetry_snapshot_age_seconds`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if rec.Code != 200 {
+		t.Errorf("status %d: %s", rec.Code, body)
+	}
+}
+
+func TestSwitchesKeepTheEBPFOnlyFootprint(t *testing.T) {
+	// PROMETHEUS_KERNEL_METRICS=no and PROMETHEUS_ROUTING_METRICS=no: Node false, no State.
+	body := scrape(t, fakeSource{snap: &agent.Snapshot{Time: time.Now()}})
+	for _, prefix := range []string{"tarvos_container_", "tarvos_process_", "tarvos_interface_up",
+		"tarvos_bgp_", "tarvos_evpn_", "tarvos_qos_", "tarvos_copp_", "tarvos_telemetry_state_"} {
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, prefix) {
+				t.Errorf("eBPF-only exporter emits %s", line)
+			}
+		}
+	}
+	if !strings.Contains(body, "tarvos_telemetry_up 1") {
 		t.Error(body)
 	}
 }

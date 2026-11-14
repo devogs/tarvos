@@ -1,6 +1,7 @@
-// Package prom exposes the agent's counters in the Prometheus text format (/metrics).
-// Every scrape takes one agent snapshot: nothing is cached, and the eBPF maps are never
-// read here directly.
+// Package prom exposes the node's metrics in the Prometheus text format (/metrics):
+// the eBPF counters (one agent snapshot per scrape; the maps are never read here
+// directly), the container's own resources, kernel interface gauges, and the routing
+// and kernel-feature state also served over NETCONF and gNMI (cached, see state).
 package prom
 
 import (
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,6 +17,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/devogs/tarvos/telemetry/internal/agent"
+	"github.com/devogs/tarvos/telemetry/internal/node"
+	"github.com/devogs/tarvos/telemetry/internal/state"
 )
 
 const namespace = "tarvos"
@@ -49,8 +53,18 @@ var (
 
 // Collector turns snapshots into metrics.
 type Collector struct {
-	Source  agent.Source
-	Version string
+	Source     agent.Source
+	Version    string
+	FRRVersion string
+	// FS reads the container's cgroup and /proc (zero value: the real root).
+	FS node.FS
+	// Node: container, process, eBPF, interface gauges (PROMETHEUS_KERNEL_METRICS).
+	Node bool
+	// State: routing and kernel-feature state (nil: off).
+	State *state.Fetcher
+
+	mu     sync.Mutex
+	speeds map[int]speedEntry
 }
 
 // Describe implements prometheus.Collector.
@@ -59,15 +73,29 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 		vniBytes, vniDrops, cpPackets, cpBytes, info, up} {
 		ch <- d
 	}
+	for _, d := range nodeDescs {
+		ch <- d
+	}
+	for _, d := range stateDescs {
+		ch <- d
+	}
 }
 
 // Collect implements prometheus.Collector.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
+	start := time.Now()
+	defer func() { gauge(ch, scrapeDuration, time.Since(start).Seconds()) }()
+	if c.Node {
+		c.collectNode(ch)
+		c.collectLinks(ch)
+	}
+	c.collectState(ch)
 	snap, err := c.Source.Snapshot()
 	if err != nil {
 		ch <- prometheus.MustNewConstMetric(up, prometheus.GaugeValue, 0)
 		return
 	}
+	gauge(ch, snapshotAge, max(0, time.Since(snap.Time).Seconds()))
 	ch <- prometheus.MustNewConstMetric(up, prometheus.GaugeValue, 1)
 	ch <- prometheus.MustNewConstMetric(info, prometheus.GaugeValue, 1,
 		c.Version, snap.Attach, strconv.FormatBool(snap.DropTracing))
@@ -117,13 +145,15 @@ func histogram(t agent.Traffic, bounds []uint64, labels ...string) prometheus.Me
 	return prometheus.MustNewConstHistogram(ifSizes, t.Packets, float64(t.Bytes), buckets, labels...)
 }
 
-// Handler serves /metrics for src (plus the agent process's own metrics).
-func Handler(src agent.Source, version string) http.Handler {
+// Handler serves /metrics for c (plus the agent process's own metrics).
+func Handler(c *Collector) http.Handler {
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(&Collector{Source: src, Version: version})
+	registry.MustRegister(c)
 	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	// A series that cannot be built must not empty the whole scrape.
+	mux.Handle("GET /metrics", promhttp.HandlerFor(registry,
+		promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}))
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("Tarvos telemetry: /metrics\n"))
 	})
@@ -131,8 +161,8 @@ func Handler(src agent.Source, version string) http.Handler {
 }
 
 // Serve runs the exporter on listener until it is closed.
-func Serve(listener net.Listener, src agent.Source, version string) error {
-	server := &http.Server{Handler: Handler(src, version), ReadHeaderTimeout: 10 * time.Second}
+func Serve(listener net.Listener, c *Collector) error {
+	server := &http.Server{Handler: Handler(c), ReadHeaderTimeout: 10 * time.Second}
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) &&
 		!errors.Is(err, net.ErrClosed) {
 		return err

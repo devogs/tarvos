@@ -104,9 +104,23 @@ def read_events(directory: str) -> dict[str, dict[str, Any]]:
     return events
 
 
+def read_counts(directory: str) -> list[dict[str, Any]]:
+    """counts.json of aaa_event.py -> authentication-count entries (method, result)."""
+    try:
+        counts = json.loads(Path(directory, "counts.json").read_text())
+    except (OSError, ValueError):
+        return []
+    out = []
+    for key, value in sorted(counts.items() if isinstance(counts, dict) else []):
+        method, _, result = str(key).partition(":")
+        if method in METHODS and result in ("success", "failure") and isinstance(value, int):
+            out.append({"method": method, "result": result, "count": value})
+    return out
+
+
 def state(
     settings: AaaSettings, source: str, probes: dict[str, dict[str, Any]],
-    events: dict[str, dict[str, Any]],
+    events: dict[str, dict[str, Any]], counts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:  # fmt: skip
     out: dict[str, Any] = {
         "tacacs-active": settings.tacacs_enabled,
@@ -140,6 +154,8 @@ def state(
         if isinstance(record.get("time"), int):
             last["time"] = _datetime(record["time"])
         out[container] = last
+    if counts:
+        out["authentication-count"] = counts
     return {"aaa": {"state": out}}
 
 
@@ -199,7 +215,7 @@ class AaaBackend:
     def state(self, _config: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             settings, source, probes = self.settings, self.source, dict(self.probes)
-        return state(settings, source, probes, read_events(STATE_DIR))
+        return state(settings, source, probes, read_events(STATE_DIR), read_counts(STATE_DIR))
 
 
 def main() -> int:

@@ -124,3 +124,23 @@ def test_failed_write_is_retried_by_the_restore(tmp_path, monkeypatch):
         backend.apply({"aaa": {"tacacs": {"server": [{"address": "192.0.2.9", "secret": "z"}]}}})
     backend.apply({})  # restore of the running configuration: must rewrite, not skip
     assert len(writes) == 2
+
+
+def test_authentication_counts(tmp_path, monkeypatch):
+    import aaa_event
+    from aaa_sync import read_counts
+
+    monkeypatch.setenv("PAM_TYPE", "auth")
+    monkeypatch.setattr(aaa_event, "STATE_DIR", str(tmp_path))
+    for method, result in [("tacacs", "success"), ("tacacs", "success"), ("local", "failure")]:
+        assert aaa_event.main(["aaa_event.py", method, result]) == 0
+    counts = read_counts(str(tmp_path))
+    assert counts == [
+        {"method": "local", "result": "failure", "count": 1},
+        {"method": "tacacs", "result": "success", "count": 2},
+    ]
+    settings = AaaSettings((), "", 5)
+    out = state(settings, "environment", {}, {}, counts)["aaa"]["state"]
+    assert out["authentication-count"] == counts
+    (tmp_path / "counts.json").write_text('{"x:y": 1, "local:success": "3"}')
+    assert read_counts(str(tmp_path)) == []  # malformed entries ignored

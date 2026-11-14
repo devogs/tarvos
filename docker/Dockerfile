@@ -157,7 +157,8 @@ ARG FRR_VERSION=10.7.1-0~deb13u1
 ENV DEBIAN_FRONTEND=noninteractive \
     SYSREPO_REPOSITORY_PATH=/var/lib/sysrepo \
     PATH=/opt/venv/bin:$PATH \
-    YANG_DIR=/opt/tarvos/yangs
+    YANG_DIR=/opt/tarvos/yangs \
+    TARVOS_FRR_VERSION=${FRR_VERSION}
 
 COPY --from=builder /usr/share/keyrings/frrouting.gpg /usr/share/keyrings/frrouting.gpg
 
