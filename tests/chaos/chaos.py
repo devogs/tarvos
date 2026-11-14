@@ -188,9 +188,12 @@ def fault(name: str, group: str, hold: float = 5.0) -> Callable:
 
 def kill(node: str, process: str, signal: str = "KILL") -> Callable[[Lab], object]:
     def apply(lab: Lab) -> object:
-        pattern = process if len(process) <= 15 else process[:15]
-        flag = "-f" if process.endswith(".py") else "-x"
-        return lab.x(node, f"pkill -{signal} {flag} {pattern}; true", check=False)
+        if process.endswith(".py"):
+            # -f matches command lines: "[f]rr_sync.py" does not match this shell's own
+            flag, pattern = "-f", f"[{process[0]}]{process[1:]}"
+        else:
+            flag, pattern = "-x", process[:15]
+        return lab.x(node, f"pkill -{signal} {flag} '{pattern}'; true", check=False, timeout=30)
 
     return apply
 
@@ -717,7 +720,15 @@ def main() -> int:
     faults = [f for f in FAULTS if not only or any(o in f.name for o in only)]
     order = faults[:]
     rng.shuffle(order)
-    outcomes = [run_fault(lab, f, base) for f in order]
+    outcomes = []
+    for f in order:
+        try:
+            outcomes.append(run_fault(lab, f, base))
+        except Exception as exc:  # noqa: BLE001 - a harness error must not stop the run
+            print(f"   ERROR {type(exc).__name__}: {exc}", flush=True)
+            failures, recovery = check_invariants(lab, base)
+            failures["harness"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            outcomes.append(Outcome(f.name, f.group, False, recovery, failures))
     monkey_failures = None
     if args.monkey > 0 and not only:
         print(f"== monkey: {args.monkey:.0f} min", flush=True)
