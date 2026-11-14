@@ -307,8 +307,12 @@ def main() -> int:
         log(f"serving {len(modules)} modules")
         # Periodic re-application: FRR configuration changed behind Tarvos' back (vtysh)
         # in Tarvos-owned blocks is put back; frr-reload sends nothing when nothing drifted.
-        interval = float(os.environ.get("FRR_RECONCILE_INTERVAL", "30"))
-        while not stop.wait(interval):
+        # Opt-in (FRR_RECONCILE_INTERVAL seconds, 0 = off, the default): each pass is a
+        # full frr-reload, too heavy to run every few seconds on every node.
+        interval = float(os.environ.get("FRR_RECONCILE_INTERVAL", "0") or 0)
+        if interval <= 0:
+            stop.wait()
+        while interval > 0 and not stop.wait(interval):
             stale = time.monotonic() - 120
             if any(t > stale for t in in_flight.values()):
                 continue  # a transaction is between change and done: do not undo it
