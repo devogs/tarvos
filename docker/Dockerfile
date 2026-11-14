@@ -187,7 +187,7 @@ COPY scripts/ /opt/tarvos/scripts/
 COPY daemons/ /opt/tarvos/daemons/
 RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py /opt/tarvos/daemons/*.py
 
-EXPOSE 22 830
+EXPOSE 22 830 9273
 VOLUME ["/opt/tarvos/yangs"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

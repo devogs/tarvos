@@ -9,6 +9,7 @@ IMAGE="${1:?usage: smoke.sh <image>}"
 NAME="tarvos-smoke-$$"
 SSH_HOST_PORT="${SSH_HOST_PORT:-2222}"
 NETCONF_HOST_PORT="${NETCONF_HOST_PORT:-8300}"
+PROMETHEUS_HOST_PORT="${PROMETHEUS_HOST_PORT:-9373}"
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
 
 cleanup() {
@@ -23,7 +24,7 @@ start=$(date +%s)
 docker run -d --name "${NAME}" \
     --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
     --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
-    -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" \
+    -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" -p "127.0.0.1:${PROMETHEUS_HOST_PORT}:9273" \
     -e "FRR_DAEMONS=[zebra, bgpd]" \
     "${IMAGE}" >/dev/null
 
@@ -109,6 +110,10 @@ snapshot="$(docker exec "${NAME}" tarvos-telemetry snapshot)" || {
     fail "telemetry agent not serving"
 }
 python3 "$(dirname "$0")/telemetry_check.py" smoke "${snapshot}" || fail "unexpected telemetry snapshot"
+
+echo "== Prometheus /metrics (port 9273, management VRF)"
+python3 "$(dirname "$0")/metrics_check.py" "http://127.0.0.1:${PROMETHEUS_HOST_PORT}/metrics" ||
+    fail "Prometheus exporter"
 
 mem="$(docker stats --no-stream --format '{{.MemUsage}}' "${NAME}" | awk '{print $1}')"
 printf 'BOOT_SECONDS=%s\nMEM_USAGE=%s\n' "${boot_seconds}" "${mem}" >metrics.env

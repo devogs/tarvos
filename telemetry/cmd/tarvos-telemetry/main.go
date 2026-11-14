@@ -5,7 +5,8 @@
 //	tarvos-telemetry snapshot  print the counters of the running agent (JSON)
 //
 // Configuration comes from the environment (see .env.example): TELEMETRY_EXCLUDE,
-// TELEMETRY_SYNC_INTERVAL, TELEMETRY_SOCKET.
+// TELEMETRY_SYNC_INTERVAL, TELEMETRY_SOCKET, TELEMETRY_LISTEN_VRF, PROMETHEUS_ENABLED,
+// PROMETHEUS_PORT.
 package main
 
 import (
@@ -22,6 +23,8 @@ import (
 
 	"github.com/devogs/tarvos/telemetry/internal/agent"
 	"github.com/devogs/tarvos/telemetry/internal/api"
+	"github.com/devogs/tarvos/telemetry/internal/listen"
+	"github.com/devogs/tarvos/telemetry/internal/prom"
 )
 
 var version = "dev"
@@ -43,6 +46,26 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
+}
+
+func enabled(name string, fallback bool) bool {
+	switch strings.ToLower(env(name, strconv.FormatBool(fallback))) {
+	case "yes", "true", "1", "on":
+		return true
+	case "no", "false", "0", "off":
+		return false
+	}
+	log.Printf("WARNING: %s must be yes or no; using %v", name, fallback)
+	return fallback
+}
+
+func port(name string, fallback int) int {
+	n, err := strconv.Atoi(env(name, strconv.Itoa(fallback)))
+	if err != nil || n < 1 || n > 65535 {
+		log.Printf("WARNING: %s must be a TCP port; using %d", name, fallback)
+		return fallback
+	}
+	return n
 }
 
 func seconds(name string, fallback int) time.Duration {
@@ -82,6 +105,21 @@ func run() error {
 			}
 		}
 	}()
+	vrf := listen.VRF(os.LookupEnv)
+	if enabled("PROMETHEUS_ENABLED", true) {
+		p := port("PROMETHEUS_PORT", 9273)
+		l, err := listen.TCP(p, vrf)
+		if err != nil {
+			return err
+		}
+		go func() { <-ctx.Done(); l.Close() }()
+		go func() {
+			if err := prom.Serve(l, a, version); err != nil {
+				log.Printf("ERROR: Prometheus exporter: %v", err)
+			}
+		}()
+		log.Printf("Prometheus exporter on port %d (VRF %q)", p, vrf)
+	}
 	socket := env("TELEMETRY_SOCKET", api.DefaultSocket)
 	log.Printf("serving counters on %s (version %s)", socket, version)
 	return api.Serve(ctx, socket, a)
