@@ -121,6 +121,24 @@ wait_for 30 "h1 cannot reach 10.10.2.1 (symmetric IRB)" docker exec "h1-${ID}" p
 for _ in $(seq 1 30); do nc_state 2>/dev/null && break; sleep 1; done
 nc_state || fail "leaf1 NETCONF state check failed"
 
+echo "== troubleshooting tools across the fabric (vrfexec, tcpdump, path MTU)"
+# h1's anycast gateway answers, traceroute in VRF RED crosses the L3VNI to leaf2.
+docker exec "h1-${ID}" ping -c1 -W2 10.1.100.1 >/dev/null || fail "h1 cannot ping its anycast gateway"
+docker exec "leaf1-${ID}" vrfexec RED ping -c1 -W2 10.10.2.1 >/dev/null ||
+    fail "vrfexec RED ping 10.10.2.1 from leaf1"
+docker exec "leaf1-${ID}" vrfexec RED traceroute -n -w 2 -q 1 -m 4 10.10.2.1 | grep -q '10.10.2.1' ||
+    fail "vrfexec RED traceroute across the fabric"
+# tcpdump on the underlay port shows the VXLAN outer header of h1 -> h2 traffic.
+cap="$(docker exec "leaf1-${ID}" sh -c "timeout 10 tcpdump -lnni eth1 -c 1 'udp port 4789' 2>/dev/null &
+    sleep 2; wait" & sleep 3; docker exec "h1-${ID}" ping -c3 -W1 10.1.100.12 >/dev/null; wait)"
+grep -q 'VXLAN.* vni 100' <<<"${cap}" || fail "tcpdump did not decode VXLAN VNI 100 on eth1: ${cap}"
+# Path MTU across the VXLAN underlay: 1500 - 50 bytes of VXLAN overhead = 1450 inner,
+# so 1422 bytes of ICMP payload (+ 28 of IP/ICMP headers) pass with DF set.
+docker exec "leaf1-${ID}" vrfexec RED ping -M "do" -s 1422 -c1 -W2 10.10.2.1 >/dev/null ||
+    fail "1450-byte packets with DF do not cross the fabric"
+docker exec "leaf1-${ID}" vrfexec RED tracepath -n 10.10.2.1 | grep -q 'pmtu' ||
+    fail "tracepath reports no path MTU"
+
 echo "== eBPF telemetry: per-VNI VXLAN counters and BGP/VXLAN packets on the fabric port"
 python3 "${HERE}/telemetry_check.py" evpn "$(docker exec "leaf1-${ID}" tarvos-telemetry snapshot)" ||
     fail "telemetry counters"

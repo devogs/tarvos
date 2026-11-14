@@ -186,3 +186,27 @@ def test_periodic_reconciliation_waits_for_an_open_transaction(monkeypatch):
     agent.transaction("tarvos-vrf", "change")
     monkeypatch.setattr(netdev_sync, "IN_FLIGHT_TIMEOUT", -1.0)  # "done" was lost
     assert not agent.busy()
+
+
+def test_isolation_routes_added_for_each_vrf_and_removed_when_stale():
+    from netdev_sync import ISOLATION_METRIC, ROUTE_PROTO, isolation_plan
+
+    d = _desired()
+    v4, v6 = isolation_plan(d, {4: [], 6: []})
+    spec = ["unreachable", "default", "metric", str(ISOLATION_METRIC)]
+    assert v4 == [["ip", "-4", "route", "replace", *spec, "table", "1010",
+                   "proto", str(ROUTE_PROTO)]]  # fmt: skip
+    assert v6 and v6[0][:2] == ["ip", "-6"]
+    # present: nothing to do; a stale table (VRF removed) is cleaned up; foreign routes
+    # (other protocol) are never touched
+    routes = {
+        4: [
+            {"dst": "default", "table": "1010", "protocol": "tarvos"},
+            {"dst": "default", "table": "2020", "protocol": "tarvos"},
+            {"dst": "default", "table": "3030", "protocol": "static"},
+        ],
+        6: [{"dst": "default", "table": "1010", "protocol": "250"}],
+    }
+    v4, v6 = isolation_plan(d, routes)
+    assert v4 == [["ip", "-4", "route", "del", *spec, "table", "2020"]]
+    assert v6 == []
