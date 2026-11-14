@@ -53,7 +53,7 @@ docker network create --subnet 172.31.2.0/24 "${NETS[2]}" >/dev/null
 for n in 1 2; do
     leaf="leaf${n}-${ID}"
     docker run -d --name "${leaf}" --hostname "leaf${n}" \
-        --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN \
+        --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
         --sysctl net.ipv4.ip_forward=1 \
         --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
         -p "127.0.0.1::830" -e "FRR_DAEMONS=bgpd" "${IMAGE}" >/dev/null
@@ -120,6 +120,10 @@ echo "== symmetric IRB over L3VNI 5000: h1 -> leaf2's 10.10.2.1 (VRF RED)"
 wait_for 30 "h1 cannot reach 10.10.2.1 (symmetric IRB)" docker exec "h1-${ID}" ping -c1 -W1 10.10.2.1
 for _ in $(seq 1 30); do nc_state 2>/dev/null && break; sleep 1; done
 nc_state || fail "leaf1 NETCONF state check failed"
+
+echo "== eBPF telemetry: per-VNI VXLAN counters and BGP/VXLAN packets on the fabric port"
+python3 "${HERE}/telemetry_check.py" evpn "$(docker exec "leaf1-${ID}" tarvos-telemetry snapshot)" ||
+    fail "telemetry counters"
 
 echo "== NETCONF operational data from mgmtd (frr-vrf state)"
 python3 - "$(port 1)" <<'EOF' || fail "no frr-vrf operational data over NETCONF"

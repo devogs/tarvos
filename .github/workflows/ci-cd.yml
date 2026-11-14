@@ -53,6 +53,18 @@ jobs:
       - name: Unit tests
         run: pytest -q tests
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: telemetry/go.mod
+          cache-dependency-path: telemetry/go.sum
+
+      - name: Telemetry agent (gofmt, go vet, go test)
+        working-directory: telemetry
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
+
   build-test:
     name: Build, integration test, metrics
     runs-on: ubuntu-24.04
