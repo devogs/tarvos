@@ -169,3 +169,20 @@ def test_oper_callbacks_have_the_sysrepo_signature(monkeypatch):
     agent.data = {"tarvos-vrf": VRFS, "tarvos-vxlan": VXLAN}
     for _module, xpath, method in netdev_sync.OPER_XPATHS:
         assert getattr(agent, method)(xpath, None)
+
+
+def test_periodic_reconciliation_waits_for_an_open_transaction(monkeypatch):
+    import netdev_sync
+
+    agent = netdev_sync.Agent()
+    assert not agent.busy()
+    agent.transaction("tarvos-vrf", "change")
+    assert agent.busy()  # committed datastore still holds the old data
+    agent.transaction("tarvos-vrf", "done")
+    assert not agent.busy()
+    agent.transaction("tarvos-vxlan", "change")
+    agent.transaction("tarvos-vxlan", "abort")
+    assert not agent.busy()
+    agent.transaction("tarvos-vrf", "change")
+    monkeypatch.setattr(netdev_sync, "IN_FLIGHT_TIMEOUT", -1.0)  # "done" was lost
+    assert not agent.busy()

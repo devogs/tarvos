@@ -296,3 +296,153 @@ class BgpState:
             return {}
         state: dict[str, Any] = {leaf: items} if leaf == "instance" else {"evpn": {leaf: items}}
         return {"bgp": {"state": state}}
+
+
+# -- tarvos-frr: daemons configured with CLI lines --------------------------------------
+
+_HMS = re.compile(r"^(\d+):(\d{2}):(\d{2})$")
+_UNITS = {"y": 31536000, "w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
+_SPAN = re.compile(r"(\d+)([ywdhms])")
+
+
+def duration(text: Any) -> int | None:
+    """FRR uptime strings ('00:01:19', '1d02h03m', '2w3d04h') -> seconds."""
+    if isinstance(text, int) and not isinstance(text, bool):
+        return text if text >= 0 else None
+    value = str(text or "").strip()
+    match = _HMS.match(value)
+    if match:
+        hours, minutes, seconds = (int(g) for g in match.groups())
+        return hours * 3600 + minutes * 60 + seconds
+    parts = _SPAN.findall(value)
+    if parts and "".join(n + u for n, u in parts) == value:
+        return sum(int(n) * _UNITS[u] for n, u in parts)
+    return None
+
+
+def pim_neighbors(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """``show ip pim neighbor json`` -> /frr/state/pim/neighbor."""
+    out = []
+    for interface, neighbors in sorted(_children(data)):
+        for address, info in sorted(_children(neighbors)):
+            if _ip(address) is None:
+                continue
+            entry: dict[str, Any] = {"interface": interface, "address": _ip(address)}
+            _set(entry, "uptime", duration(info.get("upTime")))
+            _set(entry, "holdtime-remaining", duration(info.get("holdTime")))
+            _set(entry, "dr-priority", _uint(info.get("drPriority")))
+            out.append(entry)
+    return out
+
+
+def ldp_neighbors(data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """``show mpls ldp neighbor json`` -> /frr/state/ldp/neighbor."""
+    out = []
+    for info in data.get("neighbors") or []:
+        lsr = _ip(info.get("neighborId"))
+        if lsr is None:
+            continue
+        entry: dict[str, Any] = {"lsr-id": lsr}
+        family = info.get("addressFamily")
+        _set(entry, "address-family", family if family in ("ipv4", "ipv6") else None)
+        _set(entry, "transport-address", _ip(info.get("transportAddress")))
+        _set(entry, "state", str(info.get("state", "")).lower() or None)
+        _set(entry, "uptime", duration(info.get("upTime")))
+        out.append(entry)
+    return sorted(out, key=lambda e: e["lsr-id"])
+
+
+VRRP_STATES = {"initialize", "backup", "master"}
+
+
+def vrrp_routers(data: Any) -> list[dict[str, Any]]:
+    """``show vrrp json`` -> /frr/state/vrrp/router."""
+    out = []
+    for info in data if isinstance(data, list) else []:
+        vrid, interface = _uint(info.get("vrid")), info.get("interface")
+        if not vrid or not interface:
+            continue
+        entry: dict[str, Any] = {"interface": interface, "vrid": vrid}
+        _set(entry, "version", _uint(info.get("version")))
+        _set(entry, "priority", _uint(info.get("priority")))
+        families = []
+        for key, name in (("v4", "ipv4"), ("v6", "ipv6")):
+            family = info.get(key) or {}
+            addresses = [a for a in (_ip(x) for x in family.get("addresses") or []) if a]
+            if not addresses:
+                continue  # not configured for this family
+            af: dict[str, Any] = {"name": name, "virtual-address": addresses}
+            status = str(family.get("status", "")).lower()
+            _set(af, "state", status if status in VRRP_STATES else None)
+            _set(af, "effective-priority", _uint(family.get("effectivePriority")))
+            _set(af, "macvlan-interface", family.get("interface") or None)
+            _set(af, "master-address", _ip(family.get("primaryAddress")))
+            stats = family.get("stats") or {}
+            _set(af, "advertisements-sent", _uint(stats.get("adverTx")))
+            _set(af, "advertisements-received", _uint(stats.get("adverRx")))
+            _set(af, "transitions", _uint(stats.get("transitions")))
+            families.append(af)
+        if families:
+            entry["address-family"] = families
+        out.append(entry)
+    return sorted(out, key=lambda e: (e["interface"], e["vrid"]))
+
+
+BFD_STATUS = {"up", "down", "init", "shutdown"}
+
+
+def bfd_peers(data: Any) -> list[dict[str, Any]]:
+    """``show bfd peers json`` -> /frr/state/bfd/peer."""
+    out = []
+    for info in data if isinstance(data, list) else []:
+        discriminator, peer = _uint(info.get("id")), _ip(info.get("peer"))
+        if not discriminator or peer is None:
+            continue
+        entry: dict[str, Any] = {"local-discriminator": discriminator, "peer-address": peer}
+        _set(entry, "local-address", _ip(info.get("local")))
+        _set(entry, "interface", info.get("interface") or None)
+        _set(entry, "vrf", info.get("vrf") or None)
+        entry["multihop"] = bool(info.get("multihop"))
+        status = str(info.get("status", "")).lower()
+        _set(entry, "status", status if status in BFD_STATUS else None)
+        _set(entry, "uptime", _uint(info.get("uptime")))
+        _set(entry, "downtime", _uint(info.get("downtime")))
+        _set(entry, "diagnostic", info.get("diagnostic"))
+        _set(entry, "remote-diagnostic", info.get("remote-diagnostic"))
+        _set(entry, "remote-discriminator", _uint(info.get("remote-id")) or None)
+        _set(entry, "receive-interval", _uint(info.get("receive-interval")))
+        _set(entry, "transmit-interval", _uint(info.get("transmit-interval")))
+        _set(entry, "detect-multiplier", _uint(info.get("detect-multiplier")))
+        out.append(entry)
+    return sorted(out, key=lambda e: e["local-discriminator"])
+
+
+FRR = "tarvos-frr"
+FRR_STATE = f"/{FRR}:frr/state"
+# subtree -> (daemon, show command, parser)
+FRR_PROTOCOLS: dict[str, tuple[str, str, Any]] = {
+    "pim": ("pimd", "show ip pim neighbor json", pim_neighbors),
+    "ldp": ("ldpd", "show mpls ldp neighbor json", ldp_neighbors),
+    "vrrp": ("vrrpd", "show vrrp json", vrrp_routers),
+    "bfd": ("bfdd", "show bfd peers json", bfd_peers),
+}
+FRR_LISTS = {"pim": "neighbor", "ldp": "neighbor", "vrrp": "router", "bfd": "peer"}
+FRR_OPER_XPATHS = tuple(f"{FRR_STATE}/{name}" for name in FRR_PROTOCOLS)
+
+
+class FrrDaemonState:
+    """Builds the tarvos-frr state subtrees; ``frr`` is :mod:`tarvos_frr.vtysh`."""
+
+    def __init__(self, frr: Any) -> None:
+        self.frr = frr
+
+    def get(self, xpath: str) -> dict[str, Any]:
+        name = xpath.rsplit("/", 1)[-1]
+        daemon, command, parser = FRR_PROTOCOLS[name]
+        if daemon not in self.frr.running_daemons():
+            return {}
+        (data,) = self.frr.show_json(command)
+        items = parser(data)
+        if not items:
+            return {}
+        return {"frr": {"state": {name: {FRR_LISTS[name]: items}}}}

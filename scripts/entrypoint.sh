@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tarvos container entrypoint (runs under tini as PID 1).
 # Boot order: AAA -> sshd -> YANG registration -> sysrepo-plugind -> netopeer2
-#             -> LLDP -> FRR -> Python backend daemons (netdev, FRR, LLDP).
+#             -> LLDP -> FRR -> Python backend daemons (netdev, FRR, LLDP, AAA, QoS,
+#             nftables).
 # All configuration comes from the environment (see .env.example).
 set -uo pipefail
 
@@ -114,6 +115,10 @@ start frr_sync python3 "${DAEMONS_DIR}/frr_sync.py"
 if [ "${lldp_running}" -eq 1 ]; then
     start lldp_sync python3 "${DAEMONS_DIR}/lldp_sync.py"
 fi
+# Kernel backends of the remaining Tarvos models, in one process: runtime TACACS+
+# (tarvos-aaa), tc QoS (tarvos-qos), nftables CoPP (tarvos-nftables). A backend whose
+# module is not installed is skipped.
+start kernel_sync python3 "${DAEMONS_DIR}/kernel_sync.py"
 # Optional user-selected daemons
 for daemon in ${TARVOS_DAEMONS:-}; do
     case "${daemon}" in

@@ -7,7 +7,11 @@
 #     default TACACS_NETCONF_ACCESS=ro -> read only; TACACS_NETCONF_ACCESS=rw -> read/write
 #   - keyboard-interactive NETCONF clients go through TACACS+ too
 #   - the local break-glass account (admin) still works
+#   - tarvos-aaa over NETCONF: state (reachability, active server, last TACACS+ and local
+#     authentications), and servers configured at runtime replace TACACS_SERVER
 # Usage: tests/integration/tacacs.sh <image>   (needs python3, ncclient, sshpass, docker, sudo)
+# TACACS_TEST_SERVER=<ip>: use a TACACS+ test server already running there (key testkey,
+# user alice:alicepw) instead of starting one on the host.
 set -euo pipefail
 
 IMAGE="${1:?usage: tacacs.sh <image>}"
@@ -37,12 +41,15 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-gateway="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
-
-# Minimal TACACS+ server (tests/integration/tacacs_server.py); port 49 needs root.
-sudo python3 "$(dirname "$0")/tacacs_server.py" --key testkey --port 49 --user alice:alicepw &
-TAC_PID=$!
-sleep 2
+if [ -n "${TACACS_TEST_SERVER:-}" ]; then
+    gateway="${TACACS_TEST_SERVER}"
+else
+    gateway="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
+    # Minimal TACACS+ server (tests/integration/tacacs_server.py); port 49 needs root.
+    sudo python3 "$(dirname "$0")/tacacs_server.py" --key testkey --port 49 --user alice:alicepw &
+    TAC_PID=$!
+    sleep 2
+fi
 
 run_tarvos() { # name ssh-port netconf-port [extra docker args...]
     local name="$1" ssh_port="$2" nc_port="$3"
@@ -130,5 +137,53 @@ done
 
 echo "== local admin still works with TACACS+ configured"
 [ "$(ssh_as admin admin 'echo local-ok')" = "local-ok" ] || fail "admin login failed"
+
+echo "== tarvos-aaa state over NETCONF: probes, active server, last authentications"
+[ "$(ssh_as alice alicepw 'echo again')" = "again" ] || fail "alice could not log in"
+aaa_state() {
+    python3 "$(dirname "$0")/netconf_get.py" 127.0.0.1 "${NETCONF_HOST_PORT}" \
+        '<aaa xmlns="urn:tarvos:params:xml:ns:yang:tarvos-aaa"><state/></aaa>'
+}
+aaa_field() { # path -> text of the first match (local names, "/"-separated)
+    python3 -c '
+import sys, xml.etree.ElementTree as ET
+nodes = [ET.fromstring(sys.stdin.read().encode())]
+for name in sys.argv[1].split("/"):
+    nodes = [c for n in nodes for c in n.iter() if c.tag.split("}")[-1] == name]
+print(nodes[0].text if nodes else "")' "$1"
+}
+state="$(aaa_state)"
+[ "$(aaa_field server-source <<<"${state}")" = "environment" ] || fail "aaa: ${state}"
+[ "$(aaa_field active-server <<<"${state}")" = "${gateway}" ] ||
+    fail "aaa: active server is not ${gateway} (192.0.2.55 is unreachable): ${state}"
+for f in result user service; do
+    echo "${f}=$(aaa_field "last-tacacs-authentication/${f}" <<<"${state}")"
+done | tr '\n' ' ' | grep -q 'result=success user=alice service=sshd' ||
+    fail "aaa: last TACACS+ authentication: ${state}"
+[ "$(aaa_field last-local-authentication/user <<<"${state}")" = "admin" ] ||
+    fail "aaa: last local authentication is not admin's"
+
+echo "== tarvos-aaa: servers configured over NETCONF replace TACACS_SERVER"
+aaa_edit() {
+    python3 "$(dirname "$0")/netconf_edit.py" 127.0.0.1 "${NETCONF_HOST_PORT}" <<<"$1" ||
+        fail "tarvos-aaa edit refused"
+}
+NSA='xmlns="urn:tarvos:params:xml:ns:yang:tarvos-aaa"'
+aaa_edit "<aaa ${NSA}><tacacs><server><address>${gateway}</address><secret>wrongkey</secret></server></tacacs></aaa>"
+if ssh_as alice alicepw 'echo should-not-run' >/dev/null 2>&1; then
+    fail "alice logged in although the configured secret is wrong"
+fi
+aaa_edit "<aaa ${NSA}><tacacs><server><address>${gateway}</address><secret>testkey</secret></server></tacacs></aaa>"
+[ "$(ssh_as alice alicepw 'echo runtime-ok')" = "runtime-ok" ] ||
+    fail "alice could not log in through the NETCONF-configured server"
+state="$(aaa_state)"
+if [ "$(aaa_field server-source <<<"${state}")" != "netconf" ] ||
+    [ "$(aaa_field active-servers <<<"${state}")" != "1" ]; then
+    fail "aaa: ${state}"
+fi
+aaa_edit "<aaa ${NSA} xmlns:nc=\"urn:ietf:params:xml:ns:netconf:base:1.0\" nc:operation=\"remove\"/>"
+[ "$(aaa_field server-source <<<"$(aaa_state)")" = "environment" ] ||
+    fail "aaa: removing the servers did not restore TACACS_SERVER"
+[ "$(ssh_as alice alicepw 'echo env-ok')" = "env-ok" ] || fail "alice login after restore"
 
 echo "PASS"

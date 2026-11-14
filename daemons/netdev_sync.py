@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +35,7 @@ MODULES = ("tarvos-vrf", "tarvos-vxlan")
 ALIAS = "tarvos"
 DEFAULT_PORT = 4789
 RECONCILE_INTERVAL = float(os.environ.get("NETDEV_RECONCILE_INTERVAL", "10"))
+IN_FLIGHT_TIMEOUT = 120.0
 KIND_ORDER = {"vxlan": 0, "bridge": 1, "vrf": 2}  # deletion order; creation is reversed
 
 
@@ -383,6 +385,24 @@ class Agent:
         self.reserved_vrf = os.environ.get("MGMT_VRF_NAME", "mgmt")
         self.reserved_table = int(os.environ.get("MGMT_VRF_TABLE", "1001") or 1001)
         self.data: dict[str, dict[str, Any]] = {}
+        # Modules with a transaction between its "change" and "done"/"abort" events. The
+        # periodic reconciliation reads the committed datastore, which still holds the
+        # old data then: it must wait, or it would undo the change being committed.
+        self.in_flight: dict[str, float] = {}
+
+    def transaction(self, module: str, event: str) -> None:
+        with self.lock:
+            if event == "change":
+                self.in_flight[module] = time.monotonic()
+            else:
+                self.in_flight.pop(module, None)
+
+    def busy(self) -> bool:
+        with self.lock:
+            # A transaction never lasts this long; a lost "done" must not stall us forever.
+            stale = time.monotonic() - IN_FLIGHT_TIMEOUT
+            self.in_flight = {m: t for m, t in self.in_flight.items() if t > stale}
+            return bool(self.in_flight)
 
     def desired(self, session: Any, module: str | None) -> tuple[Desired, dict[str, Any]]:
         from sysrepo import SysrepoNotFoundError
@@ -447,6 +467,7 @@ def main() -> int:
     with SysrepoConnection() as connection, connection.start_session("running") as session:
 
         def callback(event_session: Any, event: str, req_id: int, module: Any) -> None:
+            agent.transaction(module, event)
             try:
                 if event == "change":
                     try:
@@ -481,6 +502,8 @@ def main() -> int:
                 log(f"WARNING: no operational data for {xpath} ({exc})")
         log("serving tarvos-vrf, tarvos-vxlan")
         while not stop.wait(RECONCILE_INTERVAL):
+            if agent.busy():
+                continue
             try:
                 with connection.start_session("running") as running:
                     agent.reconcile(running, quiet=True)

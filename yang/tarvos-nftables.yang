@@ -6,6 +6,9 @@ module tarvos-nftables {
   import ietf-inet-types {
     prefix inet;
   }
+  import ietf-yang-types {
+    prefix yang;
+  }
 
   organization
     "Tarvos Network OS";
@@ -13,10 +16,19 @@ module tarvos-nftables {
     "Tarvos project";
   description
     "Control-plane policing (CoPP) and filtering rules for the Tarvos INPUT
-     chain, translated by the backend daemon into nftables commands.
+     chain, translated by the backend daemon (tarvos-nft-sync) into nftables.
+
+     The rules are installed in a table owned by Tarvos, 'inet tarvos' (chain
+     'copp', hook input, policy accept), replaced as a whole in one nft
+     transaction on every change: counters restart from zero. Other nftables
+     tables are never touched. Traffic that matches no rule is accepted.
 
      Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
 
+  revision 2026-11-14 {
+    description
+      "Backend (table inet tarvos) and operational state: per-rule counters.";
+  }
   revision 2026-11-12 {
     description
       "Initial revision.";
@@ -132,7 +144,50 @@ module tarvos-nftables {
           }
           units "packets";
           description
-            "Burst allowance; the backend picks a default when absent.";
+            "Burst allowance (packets). Unset: a tenth of max-pps, at least 5.";
+        }
+
+        container state {
+          config false;
+          description
+            "Counters of the rule since it was last installed.";
+          leaf matched-packets {
+            type yang:counter64;
+            description
+              "Packets that matched the rule.";
+          }
+          leaf matched-bytes {
+            type yang:counter64;
+            description
+              "Bytes of the packets that matched the rule.";
+          }
+          leaf dropped-packets {
+            type yang:counter64;
+            description
+              "Matching packets dropped: all of them for a drop rule, the
+               excess over max-pps for a rate-limit rule.";
+          }
+          leaf dropped-bytes {
+            type yang:counter64;
+            description
+              "Bytes of the dropped packets.";
+          }
+        }
+      }
+
+      container state {
+        config false;
+        description
+          "State of the CoPP table.";
+        leaf active {
+          type boolean;
+          description
+            "True when the Tarvos CoPP table is installed.";
+        }
+        leaf rule-count {
+          type uint32;
+          description
+            "Number of installed rules.";
         }
       }
     }

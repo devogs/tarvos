@@ -1,0 +1,12 @@
+{
+  "eth1":{
+    "172.29.9.12":{
+      "interface":"eth1",
+      "neighbor":"172.29.9.12",
+      "upTime":"00:01:16",
+      "holdTime":"00:01:29",
+      "holdTimeMax":105,
+      "drPriority":1
+    }
+  }
+}
