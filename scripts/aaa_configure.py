@@ -212,8 +212,10 @@ def write_auth_files(settings: AaaSettings, root: Path) -> None:
     TACACS+ settings. Also used at runtime by the tarvos-aaa backend (aaa_sync)."""
     # PAM files carry the TACACS+ secret in module arguments: root-only, 0600.
     write_file(root, "/etc/pam.d/sshd", render_pam(settings, with_session=True), 0o600)
-    # libnetconf2 opens the PAM service named "netopeer2.conf" (not "netopeer2")
-    write_file(root, "/etc/pam.d/netopeer2.conf", render_pam(settings, with_session=False), 0o600)
+    # libnetconf2 opens the PAM service named "netopeer2.conf" (not "netopeer2"); the
+    # gNMI server (tarvos-telemetry) authenticates through "gnmi", the same stack.
+    for service in ("netopeer2.conf", "gnmi"):
+        write_file(root, f"/etc/pam.d/{service}", render_pam(settings, with_session=False), 0o600)
     nsswitch = root / "etc/nsswitch.conf"
     current = nsswitch.read_text() if nsswitch.exists() else "passwd: files\n"
     write_file(

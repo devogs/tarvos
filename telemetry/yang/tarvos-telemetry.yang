@@ -1,0 +1,238 @@
+module tarvos-telemetry {
+  yang-version 1.1;
+  namespace "urn:tarvos:params:xml:ns:yang:tarvos-telemetry";
+  prefix ttel;
+
+  import ietf-yang-types {
+    prefix yang;
+  }
+
+  organization
+    "Tarvos Network OS";
+  contact
+    "Tarvos project";
+  description
+    "Kernel counters collected by the Tarvos eBPF telemetry agent
+     (tarvos-telemetry), served over gNMI at /tarvos-telemetry:telemetry (or
+     /telemetry). Read-only. The counters are those of the eBPF programs
+     (telemetry/bpf/tarvos.bpf.c): tc/TCX on every instrumented interface,
+     tp_btf/kfree_skb for drops.
+
+     OpenConfig interface counters (/interfaces/interface/state/counters
+     in-pkts, in-octets, out-pkts, out-octets) are served from the same
+     counters.
+
+     Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
+
+  revision 2026-11-14 {
+    description
+      "Initial revision.";
+  }
+
+  grouping packets-bytes {
+    description
+      "Packet and byte counters.";
+    leaf packets {
+      type yang:counter64;
+      description
+        "Packets.";
+    }
+    leaf bytes {
+      type yang:counter64;
+      description
+        "Bytes.";
+    }
+  }
+
+  grouping traffic {
+    description
+      "Traffic of one direction.";
+    uses packets-bytes;
+    list size-bucket {
+      key "le";
+      description
+        "Packet-size histogram: packets of at most 'le' bytes and more than the
+         previous bound (not cumulative).";
+      leaf le {
+        type string;
+        description
+          "Upper bound in bytes (64, 128, 256, 512, 1024, 1518, 9216), or
+           '+Inf' for the larger packets.";
+      }
+      leaf packets {
+        type yang:counter64;
+        description
+          "Packets in the bucket.";
+      }
+    }
+  }
+
+  container telemetry {
+    config false;
+    description
+      "eBPF telemetry.";
+
+    container agent {
+      description
+        "Telemetry agent.";
+      leaf version {
+        type string;
+        description
+          "Agent (Tarvos) version.";
+      }
+      leaf attach {
+        type enumeration {
+          enum tcx {
+            description
+              "TCX links (kernel 6.6 and later).";
+          }
+          enum tc {
+            description
+              "Legacy clsact qdisc with direct-action filters.";
+          }
+        }
+        description
+          "How the tc programs are attached.";
+      }
+      leaf drop-tracing {
+        type boolean;
+        description
+          "The kfree_skb program is attached (drop counters available).";
+      }
+    }
+
+    list interface {
+      key "name";
+      description
+        "Interfaces with counters: instrumented ones, and others where the
+         kernel dropped packets (VRF masters, excluded interfaces).";
+      leaf name {
+        type string;
+        description
+          "Interface name.";
+      }
+      leaf ifindex {
+        type uint32;
+        description
+          "Interface index.";
+      }
+      leaf kind {
+        type string;
+        description
+          "Link kind (veth, vxlan, bridge, vrf, ...).";
+      }
+      leaf instrumented {
+        type boolean;
+        description
+          "The tc programs are attached (rx and tx are available).";
+      }
+      container rx {
+        description
+          "Received traffic (tc ingress).";
+        uses traffic;
+      }
+      container tx {
+        description
+          "Transmitted traffic (tc egress).";
+        uses traffic;
+      }
+      leaf drops {
+        type yang:counter64;
+        description
+          "Packets dropped by the kernel on this interface (all reasons).";
+      }
+      list drop-reason {
+        key "reason";
+        description
+          "Drops by kernel drop reason.";
+        leaf reason {
+          type string;
+          description
+            "Kernel enum skb_drop_reason, lower case without its prefix (for
+             example no_socket, netfilter_drop).";
+        }
+        leaf packets {
+          type yang:counter64;
+          description
+            "Dropped packets.";
+        }
+      }
+    }
+
+    list vni {
+      key "id";
+      description
+        "VXLAN VNIs: counters of their VXLAN device.";
+      leaf id {
+        type uint32 {
+          range "1..16777215";
+        }
+        description
+          "VNI.";
+      }
+      leaf interface {
+        type string;
+        description
+          "VXLAN device.";
+      }
+      container rx {
+        description
+          "Traffic decapsulated from remote VTEPs.";
+        uses packets-bytes;
+      }
+      container tx {
+        description
+          "Traffic to be encapsulated towards remote VTEPs.";
+        uses packets-bytes;
+      }
+      leaf drops {
+        type yang:counter64;
+        description
+          "Packets dropped on the VXLAN device.";
+      }
+    }
+
+    list control-plane {
+      key "interface protocol direction";
+      description
+        "Control-plane protocol packets, recognised from their headers.";
+      leaf interface {
+        type string;
+        description
+          "Interface.";
+      }
+      leaf protocol {
+        type enumeration {
+          enum bgp;
+          enum bfd;
+          enum ldp;
+          enum ospf;
+          enum isis;
+          enum vrrp;
+          enum pim;
+          enum lldp;
+          enum vxlan {
+            description
+              "VXLAN-encapsulated packets (outer UDP 4789).";
+          }
+          enum ssh;
+          enum netconf;
+          enum tacacs;
+          enum gnmi;
+          enum prometheus;
+        }
+        description
+          "Protocol.";
+      }
+      leaf direction {
+        type enumeration {
+          enum rx;
+          enum tx;
+        }
+        description
+          "Direction.";
+      }
+      uses packets-bytes;
+    }
+  }
+}
