@@ -119,6 +119,29 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip uninstall -y pip setuptools
 
 # ---------------------------------------------------------------------------
+# Telemetry agent: eBPF programs (C, GPL) compiled with clang; Go agent with the
+# Prometheus exporter and gNMI server (linked against libpam).
+# ---------------------------------------------------------------------------
+FROM golang:1.24-bookworm AS telemetry
+
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang llvm libbpf-dev libpam0g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src/telemetry
+COPY telemetry/go.mod telemetry/go.sum ./
+RUN go mod download
+COPY telemetry/ ./
+COPY VERSION /src/VERSION
+# Regenerate the eBPF object from source (the committed one only serves go test/vet).
+# cgo: the gNMI server authenticates through libpam (runtime: libpam0g).
+RUN go generate ./internal/bpf \
+    && CGO_ENABLED=1 go build -trimpath \
+        -ldflags="-s -w -X main.version=$(tr -d '[:space:]' < /src/VERSION)" \
+        -o /out/tarvos-telemetry ./cmd/tarvos-telemetry
+
+# ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
 FROM debian:trixie-slim AS runtime
@@ -150,6 +173,7 @@ RUN apt-get update \
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /var/lib/sysrepo /var/lib/sysrepo
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=telemetry /out/tarvos-telemetry /usr/local/bin/tarvos-telemetry
 
 # Local fallback account (password set at boot from ADMIN_PASSWORD, default "admin")
 # and the shared account that TACACS+-authenticated users are mapped to.
@@ -165,7 +189,7 @@ COPY scripts/ /opt/tarvos/scripts/
 COPY daemons/ /opt/tarvos/daemons/
 RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py /opt/tarvos/daemons/*.py
 
-EXPOSE 22 830
+EXPOSE 22 830 9273 57400
 VOLUME ["/opt/tarvos/yangs"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

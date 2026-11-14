@@ -7,6 +7,8 @@
 * The other daemons are configured from frr-filter, frr-route-map, frr-bgp-route-map,
   frr-bfdd, tarvos-bgp, tarvos-ospf, tarvos-isis and tarvos-frr, rendered into FRR
   configuration and applied with frr-reload.
+* Operational state of the rendered models (tarvos-bgp, tarvos-frr) is read from FRR's
+  ``show ... json`` commands on every request (:mod:`tarvos_frr.state`).
 
 Changes are applied and verified in the Sysrepo "change" event, so a configuration that
 FRR rejects is refused over NETCONF with FRR's error message. On failure or abort, FRR
@@ -27,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.environ.get("SCRIPTS_DIR", "/opt/tarvos/scripts"))
 
 from tarvos_common import log as _log  # noqa: E402
-from tarvos_frr import frrconf, mgmtd  # noqa: E402
+from tarvos_frr import frrconf, mgmtd, state  # noqa: E402
 from tarvos_frr import vtysh as frr_tools  # noqa: E402
 from tarvos_frr.frrconf import Rendered  # noqa: E402
 from tarvos_frr.renderers import ConfigError, Renderer, all_renderers  # noqa: E402
@@ -64,6 +66,8 @@ class FrrSync:
         self.native: dict[str, dict[str, str]] = {}  # root module -> units
         self.rendered: dict[str, Rendered] = {}  # renderer key -> last applied
         self.dirty = True  # FRR state unknown: force a reload
+        self.bgp_state = state.BgpState(frr)
+        self.daemon_state = state.FrrDaemonState(frr)
 
     # -- native (mgmtd) --------------------------------------------------------------
 
@@ -189,6 +193,15 @@ class FrrSync:
                 log(f"transaction aborted ({module}), resynchronising")
                 self.resync(running)
 
+    def on_state(self, xpath: str) -> dict[str, Any] | None:
+        """tarvos-bgp and tarvos-frr state (rendered models, read from vtysh)."""
+        provider = self.bgp_state if xpath.startswith(state.BGP_STATE) else self.daemon_state
+        try:
+            return provider.get(xpath)
+        except Exception as exc:  # callbacks must not raise into the C stack
+            log(f"ERROR: reading {xpath}: {exc}")
+            return None
+
     def on_oper(self, xpath: str) -> dict[str, Any] | None:
         try:
             return mgmtd.to_dict_form(self.frr.mgmt_get(xpath))
@@ -268,6 +281,18 @@ def main() -> int:
                     module,
                     xpath,
                     lambda _req_xpath, sub_xpath: sync.on_oper(sub_xpath),
+                    private_data=xpath,
+                )
+            except SysrepoError as exc:
+                log(f"WARNING: no operational data for {xpath} ({exc})")
+        rendered_state = [(state.BGP, x) for x in state.BGP_OPER_XPATHS]
+        rendered_state += [(state.FRR, x) for x in state.FRR_OPER_XPATHS]
+        for module, xpath in rendered_state:
+            try:
+                session.subscribe_oper_data_request(
+                    module,
+                    xpath,
+                    lambda _req_xpath, sub_xpath: sync.on_state(sub_xpath),
                     private_data=xpath,
                 )
             except SysrepoError as exc:

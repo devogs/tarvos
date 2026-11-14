@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tarvos container entrypoint (runs under tini as PID 1).
 # Boot order: AAA -> sshd -> YANG registration -> sysrepo-plugind -> netopeer2
-#             -> LLDP -> FRR -> Python backend daemons (netdev, FRR, LLDP).
+#             -> LLDP -> FRR -> Python backend daemons (netdev, FRR, LLDP, AAA, QoS,
+#             nftables) -> eBPF telemetry agent.
 # All configuration comes from the environment (see .env.example).
 set -uo pipefail
 
@@ -114,6 +115,21 @@ start frr_sync python3 "${DAEMONS_DIR}/frr_sync.py"
 if [ "${lldp_running}" -eq 1 ]; then
     start lldp_sync python3 "${DAEMONS_DIR}/lldp_sync.py"
 fi
+# Kernel backends of the remaining Tarvos models, in one process: runtime TACACS+
+# (tarvos-aaa), tc QoS (tarvos-qos), nftables CoPP (tarvos-nftables). A backend whose
+# module is not installed is skipped.
+start kernel_sync python3 "${DAEMONS_DIR}/kernel_sync.py"
+# eBPF telemetry agent (counters for the Prometheus and gNMI exporters). Not critical:
+# without CAP_BPF/CAP_PERFMON or kernel BTF it logs why and the node keeps working.
+case "${TELEMETRY_ENABLED:-yes}" in
+    yes | true | 1)
+        # YANG list keys and module list for the gNMI server (all modules are registered).
+        python3 "${SCRIPTS_DIR}/yang_index.py" /run/tarvos/yang-index.json ||
+            log "WARNING: YANG index failed; gNMI serves Sysrepo data as JSON only"
+        start telemetry /usr/local/bin/tarvos-telemetry run
+        ;;
+    *) log "telemetry disabled (TELEMETRY_ENABLED=${TELEMETRY_ENABLED})" ;;
+esac
 # Optional user-selected daemons
 for daemon in ${TARVOS_DAEMONS:-}; do
     case "${daemon}" in

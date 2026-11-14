@@ -19,12 +19,15 @@ Debian trixie-slim + FRRouting 10.7.1 (official packages, mgmtd) + Sysrepo/Netop
 
 - **Routing:** FRRouting 10.7.1 (BGP, MP-BGP, OSPFv2/v3, IS-IS, BFD, RIP, static, PIM, ...).
 - **BGP EVPN over VXLAN:** type-2/type-3 (L2VNI, ARP/ND suppression, anycast gateway) and type-5 with symmetric IRB (L3VNI), kernel data plane included. Tested end to end with two leaves configured only over NETCONF.
+- **gNMI:** Capabilities, Get, and Subscribe (SAMPLE, ON_CHANGE) for OpenConfig interface counters, eBPF telemetry and every YANG model's state (BGP/EVPN included), authenticated like NETCONF (admin, TACACS+).
 - **Everything over NETCONF:** FRR's own YANG models where FRR implements them (through mgmtd, as transactions), Tarvos YANG for the daemons FRR does not model yet, rendered to vtysh. A configuration FRR rejects is refused over NETCONF with FRR's error.
 - **AAA:** TACACS+ with ordered failover and a local break-glass `admin`.
 - **Discovery:** LLDP (lldpd) advertises the node. Manage it and read discovered neighbours over NETCONF with the `tarvos-lldp` module, or use `lldpcli show neighbors`.
 - **Isolated management plane:** `eth0` lives in VRF `mgmt` by default.
-- **Observability:** rsyslog to stdout, optional forwarding to remote collectors.
-- **Small and fast:** about 100 MB compressed, boots in under 10 s, about 90 MiB of RAM with bgpd (FRR 10.7 always runs mgmtd, zebra and staticd).
+- **Observability:** operational state over NETCONF for every model (BGP sessions, EVPN VNIs and routes, VRF/VXLAN devices, PIM/LDP/VRRP/BFD sessions, tc and CoPP counters, TACACS+ reachability), rsyslog to stdout with optional forwarding to remote collectors.
+- **eBPF telemetry:** per-interface traffic, packet sizes and drops by reason, per-VNI VXLAN counters and control-plane packet counters, collected in the kernel and exported to Prometheus (`/metrics`, port 9273).
+- **QoS and CoPP over NETCONF:** tc shaping and DSCP classes (`tarvos-qos`), nftables control-plane policing (`tarvos-nftables`).
+- **Small and fast:** about 100 MB compressed, boots in under 10 s, about 115 MiB of RAM with bgpd and telemetry (FRR 10.7 always runs mgmtd, zebra and staticd).
 
 ## Get the image
 
@@ -106,6 +109,111 @@ One `<edit-config>` (excerpt, see [tests/integration/netconf_evpn.py](tests/inte
 
 `FRR_DAEMONS=bgpd` is enough for this leaf; add `bfdd`, `ospfd`, ... for the corresponding models.
 
+## Operational state over NETCONF
+
+`<get>` (or `<get-data>` on the operational datastore) returns live state next to the configuration, so a controller can verify a fabric without `vtysh`. State is read from FRR (`show ... json`) and the kernel on every request; a filtered `<get>` only runs the commands its subtree needs.
+
+| Node (read-only) | Content | Source |
+|---|---|---|
+| `/tarvos-bgp:bgp/state/instance[vrf]` | AS, router ID, L3VNI and router MAC, neighbour counts; per neighbour: session state, uptime, TCP endpoints, negotiated timers, message counters, last reset reason, prefixes received/sent per address family | `show bgp vrfs json`, `show bgp vrf all neighbors json` |
+| `/tarvos-bgp:bgp/state/evpn/vni[vni]` | L2/L3 type, VXLAN device, bridge, tenant VRF, local and remote VTEPs, MAC and ARP/ND counts; L3VNI status, router MAC and L2VNIs | `show evpn vni detail json` (zebra; also without bgpd) |
+| `/tarvos-bgp:bgp/state/evpn/route-count[route-type]` | Number of EVPN routes of each type 1-5 | `show bgp l2vpn evpn json` |
+| `/tarvos-bgp:bgp/state/evpn/route[route-distinguisher prefix]` | Every EVPN route: type, MAC, IP, prefix length, path count; best path source/peer, next hops, route targets, router MAC, AS path | `show bgp l2vpn evpn json` |
+| `/tarvos-vrf:vrfs/vrf[name]/state` | Device status (`up`, `down`, `not-present`), routing table, enslaved interfaces | `ip -j -d link` |
+| `/tarvos-vxlan:vxlan/l2vni[vni]/state`, `l3vni[vni]/state` | VXLAN device status, bridge, local VTEP, remote VTEPs and remote MAC count from the VXLAN FDB, bridge ports | `ip -j -d link`, `bridge -j fdb` |
+| `/tarvos-frr:frr/state/pim/neighbor`, `ldp/neighbor`, `vrrp/router`, `bfd/peer` | PIM neighbours (uptime, holdtime, DR priority); LDP sessions (state, transport address, uptime); VRRP routers (master/backup per address family, virtual addresses, advertisement counters); BFD sessions (status, uptime, diagnostics, intervals) | `show ip pim neighbor`, `show mpls ldp neighbor`, `show vrrp`, `show bfd peers` (each only while its daemon runs) |
+| `/tarvos-qos:qos/interface[name]/state`, `class[id]/state` | Root qdisc kind and counters (packets, bytes, drops, overlimits, requeues, backlog), htb default class, per-class counters | `tc -s -j qdisc/class show` |
+| `/tarvos-nftables:nftables/copp/state`, `rule[name]/state` | CoPP table installed, rule count; per rule matched and dropped packets/bytes | `nft -j list table inet tarvos` |
+| `/tarvos-aaa:aaa/state` | TACACS+ in use and where the servers come from (`environment`/`netconf`), local fallback, per-server reachability (TCP probe of port 49) and response time, the server answering next, latest TACACS+ and local authentication (user, service, client, result, time) | probes every `AAA_PROBE_INTERVAL` s; PAM records each outcome |
+| `/tarvos-lldp:lldp/neighbors` | LLDP neighbours (see below) | lldpd |
+| `frr-interface`, `frr-vrf`, `frr-zebra`, RIB, RIP | FRR's own state | mgmtd |
+
+Example: the EVPN view of a leaf.
+
+```xml
+<get><filter type="subtree">
+  <bgp xmlns="urn:tarvos:params:xml:ns:yang:tarvos-bgp"><state>
+    <instance><vrf>default</vrf><neighbor/></instance>
+    <evpn><vni/><route-count/></evpn>
+  </state></bgp>
+</filter></get>
+```
+
+`tests/integration/netconf_state.py` is a small controller-side check that verifies sessions, VNIs and type-2/type-3/type-5 routes from these trees only.
+
+## Kernel models: QoS, CoPP, runtime AAA
+
+One backend process (`kernel_sync`) applies `tarvos-qos`, `tarvos-nftables` and `tarvos-aaa` during the NETCONF transaction: a configuration the kernel or the backend rejects comes back as an `<rpc-error>` and nothing is applied.
+
+- **`tarvos-qos` (tc):** Tarvos owns the root qdisc of every interface it lists and rebuilds it when the policy changes or the interface reappears. `htb` shapes to `bandwidth` with one htb class per configured class (`1:<id in hex>`, fq_codel leaf); unclassified traffic goes to a default class `1:fff` that gets the leftover bandwidth. `prio` uses eight bands (class priority 0-7 -> band 1-8). DSCP values are matched on the IPv4 DS field and the IPv6 traffic class. Over-subscribed rates, a rate above its ceil and a DSCP in two classes are refused. Removing an interface restores the kernel default qdisc. Interfaces that do not exist yet are applied when they appear (re-checked every `QOS_REAPPLY_INTERVAL` s).
+- **`tarvos-nftables` (CoPP):** rules go into a table owned by Tarvos, `inet tarvos` (chain `copp`, input hook, policy accept), replaced as a whole in one `nft` transaction (counters restart at zero). A `rate-limit` rule drops the excess over `max-pps` and accepts the rest. Other nftables tables are never touched.
+- **`tarvos-aaa` (PAM):** servers configured over NETCONF replace `TACACS_SERVER`/`TACACS_SECRET` (each server with its own secret) for the next SSH/NETCONF login; removing them restores the environment. `local-fallback/enabled false` rejects the `admin` login, and is itself refused while no TACACS+ server is configured.
+
+## eBPF telemetry
+
+`tarvos-telemetry` (Go, [cilium/ebpf](https://github.com/cilium/ebpf); eBPF programs in `telemetry/bpf/`, GPL) is the single owner of the eBPF programs and maps. It instruments every interface of the container (TCX, or a `clsact` qdisc on kernels older than 6.6) and re-checks for new interfaces every `TELEMETRY_SYNC_INTERVAL` seconds, since containerlab and GNS3 attach links after boot.
+
+| Counter | Labels | Source |
+|---|---|---|
+| rx/tx packets and bytes, packet-size histogram (<=64, 128, 256, 512, 1024, 1518, 9216, larger) | interface, direction | tc/TCX ingress and egress |
+| Drops, by kernel drop reason (`no_socket`, `netfilter_drop`, `ipv6disabled`, ...) | interface, reason | `tp_btf/kfree_skb`, filtered to the container's network namespace |
+| VXLAN rx/tx packets and bytes, drops | vni (and its `vx<vni>` device) | counters of the VXLAN device |
+| Control-plane packets and bytes: BGP, BFD, LDP, OSPF, IS-IS, VRRP, PIM, LLDP, VXLAN (outer), SSH, NETCONF, TACACS+, gNMI, Prometheus | interface, protocol, direction | header parsing in the tc programs |
+
+Other components read the counters only through the agent, never from the maps. The Prometheus exporter and gNMI server run in the agent process. Everything else uses the root-only socket `/run/tarvos/telemetry.sock` (`GET /v1/snapshot`, JSON). Try `docker exec <node> tarvos-telemetry snapshot`.
+
+Requirements: a kernel with BTF (`/sys/kernel/btf/vmlinux`, standard on current distributions) and `CAP_SYS_ADMIN`, which Tarvos already needs for FRR (or `CAP_BPF` + `CAP_PERFMON`, both listed in `docker-compose.yml`). GNS3 and containerlab run nodes privileged. Without drop tracing (no BTF or no `CAP_PERFMON`), the agent logs why and keeps the traffic counters. If it cannot load at all, the node keeps working without telemetry. `TELEMETRY_ENABLED=no` turns it off.
+
+## Prometheus
+
+The telemetry agent serves `/metrics` on `PROMETHEUS_PORT` (9273, `PROMETHEUS_ENABLED=yes`), in the management VRF (`TELEMETRY_LISTEN_VRF` overrides it, `none` listens in every VRF). Each scrape reads one fresh snapshot from the agent.
+
+| Series | Labels |
+|---|---|
+| `tarvos_interface_packets_total`, `tarvos_interface_bytes_total` | `interface`, `direction` |
+| `tarvos_interface_packet_size_bytes` (histogram, buckets 64 ... 9216) | `interface`, `direction` |
+| `tarvos_interface_drops_total` | `interface`, `reason` |
+| `tarvos_vni_packets_total`, `tarvos_vni_bytes_total` | `vni`, `interface`, `direction` |
+| `tarvos_vni_drops_total` | `vni`, `interface` |
+| `tarvos_control_plane_packets_total`, `tarvos_control_plane_bytes_total` | `interface`, `protocol`, `direction` |
+| `tarvos_telemetry_up`, `tarvos_telemetry_info` | `version`, `attach`, `drop_tracing` |
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: tarvos
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["leaf1:9273", "leaf2:9273", "spine1:9273"]
+```
+
+Example queries: `rate(tarvos_interface_bytes_total{direction="rx"}[1m]) * 8` (bit/s), `sum by (protocol) (rate(tarvos_control_plane_packets_total[5m]))`, `histogram_quantile(0.9, rate(tarvos_interface_packet_size_bytes_bucket[5m]))`.
+
+## gNMI
+
+The telemetry agent also serves gNMI on `GNMI_PORT` (57400, `GNMI_ENABLED=yes`), in the management VRF. It is read-only (`Set` returns `Unimplemented`: configure over NETCONF).
+
+- **RPCs:**
+  - `Capabilities`: every YANG module loaded in Sysrepo, plus `openconfig-interfaces` and `tarvos-telemetry`.
+  - `Get`: JSON or JSON_IETF subtrees, or typed leaves with `PROTO`.
+  - `Subscribe`: `ONCE`, `POLL` and `STREAM`. `SAMPLE` takes intervals of 1 s and more; `TARGET_DEFINED` means `SAMPLE` every 10 s. `ON_CHANGE` updates within 1 s for agent data and 5 s for Sysrepo data, and reports deleted paths.
+- **Paths:**
+  - `/interfaces/interface[name=*]/state` (OpenConfig): `admin-status`, `oper-status`, `mtu`, `ifindex`, and `counters/in-pkts`, `in-octets`, `out-pkts`, `out-octets` from the eBPF counters.
+  - `/telemetry` (`tarvos-telemetry`, model in `telemetry/yang/`): per interface rx/tx with the size histogram and drops by reason, per VNI, control-plane protocols, agent status.
+  - Every other module, read from the Sysrepo operational datastore: configuration and the state described above, such as `/bgp/state` for BGP sessions and EVPN.
+  - Unprefixed names are resolved when only one module defines them (`/bgp`); otherwise prefix them (`/frr-interface:lib`).
+- **Authentication:** `username`/`password` metadata, checked through PAM (service `gnmi`, the same stack as NETCONF). Both `admin` and TACACS+ users can log in, and logins appear in `/tarvos-aaa:aaa/state`. `TACACS_NETCONF_ACCESS=none` denies gNMI to TACACS+ users as well.
+- **TLS:** the certificate mounted at `GNMI_TLS_CERT`/`GNMI_TLS_KEY`. If none is mounted, a self-signed one is generated at boot, written to `/run/tarvos/gnmi/server.crt`, and its SHA-256 fingerprint is logged. `GNMI_TLS=no` serves plaintext (labs only).
+
+```sh
+G="gnmic -a leaf1:57400 -u admin -p admin --skip-verify"
+$G capabilities
+$G get --path '/bgp/state/instance[vrf=default]/neighbor[address=172.30.0.12]/session-state' --encoding proto
+$G subscribe --mode once --path /bgp/state/evpn/route-count
+$G subscribe --stream-mode sample --sample-interval 10s --path '/interfaces/interface[name=eth1]/state/counters'
+$G subscribe --stream-mode on-change --path '/interfaces/interface[name=*]/state/oper-status'
+```
+
 ## LLDP over NETCONF
 
 The `tarvos-lldp` module configures lldpd at runtime and reports discovered neighbours. The `LLDP_*` variables are the boot defaults: a leaf you configure overrides its variable, and removing it restores the variable's value.
@@ -127,6 +235,16 @@ Settings are only applied when the container runs with `LLDP_ENABLED=yes`. Per-i
 - NETCONF users are authenticated through PAM under their own name, so TACACS+ users need no per-user setup in Tarvos and appear by name in NETCONF logs. Access is controlled by NACM: `admin` has full access, TACACS+ users get `TACACS_NETCONF_ACCESS` (read-only by default; set `rw` to let them configure).
 - Both SSH `password` (ncclient, Ansible `netconf`) and `keyboard-interactive` (OpenSSH `ssh -s`, `netopeer2-cli`) go through the same PAM stack, so TACACS+ users work with either. Upstream libnetconf2 checks `password` against the local password file only; the image carries a small patch (`docker/patches/libnetconf2-password-pam.patch`) to route it through PAM.
 
+## Upgrading from 2.0
+
+2.1.0 adds observability: state for every model over NETCONF, the eBPF telemetry agent, Prometheus and gNMI. Existing `.env` files and NETCONF configurations keep working.
+
+- **New listeners**, both in the management VRF: 9273 (Prometheus) and 57400 (gNMI, TLS). Publish them (`-p`, compose `ports:`) or turn them off with `PROMETHEUS_ENABLED=no` / `GNMI_ENABLED=no` (`TELEMETRY_ENABLED=no` disables the agent altogether).
+- **Capabilities:** the agent works with the `SYS_ADMIN` capability Tarvos already needs. `docker-compose.yml` also lists `BPF` and `PERFMON`.
+- **New backends:** `tarvos-qos`, `tarvos-nftables` and `tarvos-aaa` configuration is now applied, where 2.0 accepted it without effect. Review any configuration you stored in those modules before upgrading.
+- **PAM:** the PAM stacks record each authentication (`pam_exec`, for `/tarvos-aaa:aaa/state`). Authentication behaviour is unchanged.
+- **RAM:** about 115 MiB with bgpd, against about 90 MiB in 2.0 (kernel backends and telemetry agent).
+
 ## Upgrading from 1.x
 
 2.0.0 changes the base image (Debian trixie), FRR (10.7.1 from the official FRR repository, `mgmtd` always running) and adds the routing modules above. Existing `.env` files keep working. Two behaviour changes:
@@ -138,9 +256,8 @@ Settings are only applied when the container runs with `LLDP_ENABLED=yes`. Per-i
 
 - Remote syslog forwarding is unit-tested but not yet tested against a real collector; `sysrepo-plugind` and `netopeer2-server` log to stdout only.
 - Netopeer2 advertises the `yang-library` capability and serves modules via `<get-schema>`; it does not list every module in its `<hello>`.
-- Operational state is served for the mgmtd modules (interfaces, VRFs, RIBs, RIP). BGP/OSPF/IS-IS session state is not modelled yet: use `vtysh` (`show bgp summary`, `show bgp l2vpn evpn`).
+- OSPF and IS-IS adjacency state is not modelled yet: use `vtysh` (`show ip ospf neighbor`, `show isis neighbor`).
 - The vtysh-rendered FRR models support the common nodes; anything Tarvos cannot render yet (for example cisco-style access lists, BFD authentication, some route-map actions) is refused with an explicit error, never silently dropped.
-- gNMI is not available yet.
 - Image is `linux/amd64` only.
 
 ## Development

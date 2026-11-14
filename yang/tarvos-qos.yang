@@ -3,16 +3,36 @@ module tarvos-qos {
   namespace "urn:tarvos:params:xml:ns:yang:tarvos-qos";
   prefix tqos;
 
+  import ietf-yang-types {
+    prefix yang;
+  }
+
   organization
     "Tarvos Network OS";
   contact
     "Tarvos project";
   description
-    "Interface quality of service, translated by the backend daemon into Linux
-     tc commands (htb, fq_codel, prio, cake).
+    "Interface quality of service, translated by the backend daemon
+     (tarvos-qos-sync) into Linux tc commands (htb, fq_codel, prio, cake).
+
+     Tarvos owns the root qdisc (handle 1:) of every interface listed here and
+     rebuilds it when its configuration changes or the interface reappears
+     (counters restart from zero). Removing an interface restores the kernel
+     default qdisc.
+
+     htb: class 1:1 shapes to 'bandwidth'; each class is htb class 1:<id in
+     hex> with an fq_codel leaf; unclassified traffic goes to a default class
+     1:fff (priority 7) that gets the bandwidth left over. prio: eight bands; a
+     class uses band 'priority + 1', unclassified traffic band 5. DSCP values
+     are matched on the IPv4 DS field and the IPv6 traffic class.
 
      Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
 
+  revision 2026-11-14 {
+    description
+      "Backend (tarvos-qos-sync) and operational state: qdisc and class
+       statistics.";
+  }
   revision 2026-11-12 {
     description
       "Initial revision.";
@@ -47,6 +67,46 @@ module tarvos-qos {
     }
     description
       "Root queueing discipline.";
+  }
+
+  grouping counters {
+    description
+      "Queueing statistics, as reported by tc.";
+    leaf packets {
+      type yang:counter64;
+      description
+        "Packets sent.";
+    }
+    leaf bytes {
+      type yang:counter64;
+      description
+        "Bytes sent.";
+    }
+    leaf drops {
+      type yang:counter64;
+      description
+        "Packets dropped.";
+    }
+    leaf overlimits {
+      type yang:counter64;
+      description
+        "Times the rate limit was hit (packets delayed or dropped).";
+    }
+    leaf requeues {
+      type yang:counter64;
+      description
+        "Packets requeued.";
+    }
+    leaf backlog-bytes {
+      type yang:gauge64;
+      description
+        "Bytes currently queued.";
+    }
+    leaf backlog-packets {
+      type yang:gauge64;
+      description
+        "Packets currently queued.";
+    }
   }
 
   container qos {
@@ -125,7 +185,8 @@ module tarvos-qos {
           }
           units "kbit/s";
           description
-            "Guaranteed rate of the class (htb).";
+            "Guaranteed rate of the class (htb). Unset: an equal share of the
+             bandwidth left by the classes that set one.";
         }
 
         leaf ceil {
@@ -135,6 +196,48 @@ module tarvos-qos {
           units "kbit/s";
           description
             "Maximum rate of the class (htb); defaults to the interface bandwidth.";
+        }
+
+        container state {
+          config false;
+          description
+            "Statistics of the class (htb class, or prio band).";
+          uses counters;
+        }
+      }
+
+      container state {
+        config false;
+        description
+          "Queueing state of the interface.";
+        leaf oper-status {
+          type enumeration {
+            enum present {
+              description
+                "The interface exists.";
+            }
+            enum not-present {
+              description
+                "The interface does not exist (yet).";
+            }
+          }
+          description
+            "Whether the interface exists.";
+        }
+        container root-qdisc {
+          description
+            "Root queueing discipline currently installed.";
+          leaf kind {
+            type string;
+            description
+              "tc qdisc kind (htb, prio, fq_codel, cake, ...).";
+          }
+          uses counters;
+        }
+        container default-class {
+          description
+            "Statistics of the htb default class 1:fff (unclassified traffic).";
+          uses counters;
         }
       }
     }

@@ -48,10 +48,23 @@ jobs:
           dockerfile: docker/Dockerfile
 
       - name: pyang
-        run: pyang --strict --canonical -p yang yang/*.yang
+        run: pyang --strict --canonical -p yang yang/*.yang telemetry/yang/*.yang
 
       - name: Unit tests
         run: pytest -q tests
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: telemetry/go.mod
+          cache-dependency-path: telemetry/go.sum
+
+      - name: Telemetry agent (gofmt, go vet, go test)
+        working-directory: telemetry
+        run: |
+          sudo apt-get install -y --no-install-recommends libpam0g-dev
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
 
   build-test:
     name: Build, integration test, metrics
@@ -93,6 +106,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends sshpass
           pip install --user --break-system-packages --no-cache-dir ncclient==0.6.15
+          # gNMI client for the gNMI checks (pinned release, checksum verified)
+          curl -fsSL -o /tmp/gnmic.tgz \
+            https://github.com/openconfig/gnmic/releases/download/v0.41.0/gnmic_0.41.0_Linux_x86_64.tar.gz
+          echo "8035b86b8adbe68925f1be46e8b7bf57f6e5c4eda3ca2ec3758b8c23a857d7b1  /tmp/gnmic.tgz" | sha256sum -c -
+          sudo tar -xzf /tmp/gnmic.tgz -C /usr/local/bin gnmic
           tests/integration/smoke.sh "$LOCAL_TAG"
           tests/integration/tacacs.sh "$LOCAL_TAG"
 
@@ -104,6 +122,11 @@ jobs:
             sudo modprobe vrf vxlan
           }
           tests/integration/evpn.sh "$LOCAL_TAG"
+
+      - name: Kernel backends and FRR daemon state over NETCONF (tc, nftables, AAA, PIM/LDP/VRRP/BFD)
+        run: |
+          sudo modprobe -a sch_htb cls_u32 macvlan 2>/dev/null || true
+          tests/integration/state.sh "$LOCAL_TAG"
 
       - name: Baseline metrics (informational, no caps)
         if: always()

@@ -24,6 +24,10 @@ module tarvos-vrf {
 
      Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
 
+  revision 2026-11-14 {
+    description
+      "Operational state of each VRF device.";
+  }
   revision 2026-11-13 {
     description
       "Initial revision.";
@@ -62,6 +66,41 @@ module tarvos-vrf {
           "Interfaces enslaved to the VRF (routed ports). Bridges and VXLAN
            devices created by tarvos-vxlan are placed in their VRF
            automatically.";
+      }
+
+      container state {
+        config false;
+        description
+          "Kernel state of the VRF device.";
+        leaf oper-status {
+          type enumeration {
+            enum up {
+              description
+                "The device exists and is up.";
+            }
+            enum down {
+              description
+                "The device exists but is down.";
+            }
+            enum not-present {
+              description
+                "The device does not exist (yet).";
+            }
+          }
+          description
+            "State of the VRF device.";
+        }
+        leaf table {
+          type uint32;
+          description
+            "Routing table the device is bound to.";
+        }
+        leaf-list member {
+          type ttypes:interface-name;
+          description
+            "Interfaces currently enslaved to the VRF, including the bridges
+             of its VNIs.";
+        }
       }
     }
   }

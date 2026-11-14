@@ -3,6 +3,12 @@ module tarvos-frr {
   namespace "urn:tarvos:params:xml:ns:yang:tarvos-frr";
   prefix tfrr;
 
+  import ietf-inet-types {
+    prefix inet;
+  }
+  import ietf-yang-types {
+    prefix yang;
+  }
   import tarvos-types {
     prefix ttypes;
   }
@@ -30,8 +36,17 @@ module tarvos-frr {
      frr-ripngd), FRR native YANG through vtysh (frr-filter, frr-route-map,
      frr-bgp-route-map, frr-bfdd), and tarvos-bgp, tarvos-ospf, tarvos-isis.
 
+     /frr/state reports the sessions of these daemons (and of bfdd) as far as
+     vtysh exposes them, read on every request with 'show ... json'. A
+     subtree is empty while its daemon is not running.
+
      Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
 
+  revision 2026-11-14 {
+    description
+      "Operational state: PIM neighbours, LDP sessions, VRRP routers, BFD
+       peers.";
+  }
   revision 2026-11-13 {
     description
       "Initial revision.";
@@ -147,6 +162,281 @@ module tarvos-frr {
             "Interface lines, without indentation, for example 'ip pim' or
              'vrrp 5 ip 10.0.0.1'. Each must be one of the daemon's interface
              line types.";
+        }
+      }
+    }
+
+    container state {
+      config false;
+      description
+        "Operational state of the daemons, read from FRR on request.";
+
+      container pim {
+        description
+          "pimd (IPv4 PIM).";
+        list neighbor {
+          key "interface address";
+          description
+            "PIM neighbours ('show ip pim neighbor').";
+          leaf interface {
+            type ttypes:interface-name;
+            description
+              "Local interface.";
+          }
+          leaf address {
+            type inet:ip-address-no-zone;
+            description
+              "Neighbour address.";
+          }
+          leaf uptime {
+            type uint32;
+            units "seconds";
+            description
+              "Time since the neighbour was discovered.";
+          }
+          leaf holdtime-remaining {
+            type uint32;
+            units "seconds";
+            description
+              "Time left before the neighbour expires.";
+          }
+          leaf dr-priority {
+            type uint32;
+            description
+              "Designated router priority advertised by the neighbour.";
+          }
+        }
+      }
+
+      container ldp {
+        description
+          "ldpd.";
+        list neighbor {
+          key "lsr-id";
+          description
+            "LDP sessions ('show mpls ldp neighbor').";
+          leaf lsr-id {
+            type inet:ipv4-address-no-zone;
+            description
+              "LSR ID of the neighbour.";
+          }
+          leaf address-family {
+            type enumeration {
+              enum ipv4;
+              enum ipv6;
+            }
+            description
+              "Address family of the session transport.";
+          }
+          leaf transport-address {
+            type inet:ip-address-no-zone;
+            description
+              "Transport address of the neighbour.";
+          }
+          leaf state {
+            type string;
+            description
+              "Session state as reported by ldpd ('operational' once the
+               session is up; 'initialized', 'opensent', 'openrec', ...
+               before).";
+          }
+          leaf uptime {
+            type uint32;
+            units "seconds";
+            description
+              "Time since the session reached its state.";
+          }
+        }
+      }
+
+      container vrrp {
+        description
+          "vrrpd.";
+        list router {
+          key "interface vrid";
+          description
+            "VRRP virtual routers ('show vrrp').";
+          leaf interface {
+            type ttypes:interface-name;
+            description
+              "Interface of the virtual router.";
+          }
+          leaf vrid {
+            type uint8 {
+              range "1..255";
+            }
+            description
+              "Virtual router ID.";
+          }
+          leaf version {
+            type uint8;
+            description
+              "VRRP version.";
+          }
+          leaf priority {
+            type uint8;
+            description
+              "Configured priority.";
+          }
+          list address-family {
+            key "name";
+            description
+              "Per address family instance.";
+            leaf name {
+              type enumeration {
+                enum ipv4;
+                enum ipv6;
+              }
+              description
+                "Address family.";
+            }
+            leaf state {
+              type enumeration {
+                enum initialize {
+                  description
+                    "Not running (for example: no macvlan device for the
+                     virtual MAC yet).";
+                }
+                enum backup;
+                enum master;
+              }
+              description
+                "VRRP state.";
+            }
+            leaf effective-priority {
+              type uint8;
+              description
+                "Priority in use (255 when the router owns the address).";
+            }
+            leaf macvlan-interface {
+              type ttypes:interface-name;
+              description
+                "macvlan device carrying the virtual MAC.";
+            }
+            leaf master-address {
+              type inet:ip-address-no-zone;
+              description
+                "Primary address of the current master (this router's
+                 own address while it is master).";
+            }
+            leaf-list virtual-address {
+              type inet:ip-address-no-zone;
+              description
+                "Virtual addresses.";
+            }
+            leaf advertisements-sent {
+              type yang:counter64;
+              description
+                "Advertisements sent.";
+            }
+            leaf advertisements-received {
+              type yang:counter64;
+              description
+                "Advertisements received.";
+            }
+            leaf transitions {
+              type yang:counter32;
+              description
+                "State transitions.";
+            }
+          }
+        }
+      }
+
+      container bfd {
+        description
+          "bfdd.";
+        list peer {
+          key "local-discriminator";
+          description
+            "BFD sessions ('show bfd peers').";
+          leaf local-discriminator {
+            type uint32;
+            description
+              "Local discriminator of the session.";
+          }
+          leaf remote-discriminator {
+            type uint32;
+            description
+              "Discriminator chosen by the peer.";
+          }
+          leaf peer-address {
+            type inet:ip-address-no-zone;
+            description
+              "Peer address.";
+          }
+          leaf local-address {
+            type inet:ip-address-no-zone;
+            description
+              "Local address, when configured.";
+          }
+          leaf interface {
+            type ttypes:interface-name;
+            description
+              "Interface, when configured.";
+          }
+          leaf vrf {
+            type ttypes:vrf-name;
+            description
+              "VRF of the session.";
+          }
+          leaf multihop {
+            type boolean;
+            description
+              "Multihop session.";
+          }
+          leaf status {
+            type enumeration {
+              enum up;
+              enum down;
+              enum init;
+              enum shutdown {
+                description
+                  "Administratively down.";
+              }
+            }
+            description
+              "Session state.";
+          }
+          leaf uptime {
+            type uint32;
+            units "seconds";
+            description
+              "Time since the session came up.";
+          }
+          leaf downtime {
+            type uint32;
+            units "seconds";
+            description
+              "Time since the session went down.";
+          }
+          leaf diagnostic {
+            type string;
+            description
+              "Local diagnostic of the last state change.";
+          }
+          leaf remote-diagnostic {
+            type string;
+            description
+              "Diagnostic reported by the peer.";
+          }
+          leaf receive-interval {
+            type uint32;
+            units "milliseconds";
+            description
+              "Configured minimum receive interval.";
+          }
+          leaf transmit-interval {
+            type uint32;
+            units "milliseconds";
+            description
+              "Configured minimum transmit interval.";
+          }
+          leaf detect-multiplier {
+            type uint8;
+            description
+              "Configured detection multiplier.";
+          }
         }
       }
     }

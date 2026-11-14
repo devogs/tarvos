@@ -13,6 +13,8 @@ services:
     ports:
       - "2222:22"
       - "8300:830"
+      - "9273:9273"
+      - "57400:57400"
     cap_drop:
       - ALL
     cap_add:
@@ -20,6 +22,9 @@ services:
       - NET_RAW
       # FRR zebra/bgpd need it for VRF and netns handling
       - SYS_ADMIN
+      # eBPF telemetry agent: load programs (BPF), trace drops (PERFMON)
+      - BPF
+      - PERFMON
       # sshd privilege separation, PAM and FRR's user switch
       - CHOWN
       - SETUID
