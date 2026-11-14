@@ -56,7 +56,7 @@ for n in 1 2; do
         --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
         --sysctl net.ipv4.ip_forward=1 \
         --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
-        -p "127.0.0.1::830" -e "FRR_DAEMONS=bgpd" "${IMAGE}" >/dev/null
+        -p "127.0.0.1::830" -p "127.0.0.1::57400" -e "FRR_DAEMONS=bgpd" "${IMAGE}" >/dev/null
     # Links are attached after boot, as containerlab does: eth1 fabric, eth2 LAN.
     docker network connect --ip "172.30.0.1${n}" "${NETS[0]}" "${leaf}"
     docker network connect "${NETS[n]}" "${leaf}"
@@ -124,6 +124,41 @@ nc_state || fail "leaf1 NETCONF state check failed"
 echo "== eBPF telemetry: per-VNI VXLAN counters and BGP/VXLAN packets on the fabric port"
 python3 "${HERE}/telemetry_check.py" evpn "$(docker exec "leaf1-${ID}" tarvos-telemetry snapshot)" ||
     fail "telemetry counters"
+
+echo "== gNMI (gnmic): BGP/EVPN state, OpenConfig and eBPF counters, ON_CHANGE"
+gnmi_port="$(docker port "leaf1-${ID}" 57400/tcp | head -n1 | sed 's/.*://')"
+gn() { gnmic -a "127.0.0.1:${gnmi_port}" -u admin -p admin --skip-verify --timeout 30s "$@"; }
+wait_for 30 "gNMI server not answering" gn capabilities
+gn capabilities | grep -q 'tarvos-bgp' || fail "gNMI capabilities do not list tarvos-bgp"
+got="$(gn get --encoding proto --format flat \
+    --path '/bgp/state/instance[vrf=default]/neighbor[address=172.30.0.12]/session-state')"
+grep -q 'established' <<<"${got}" || fail "gNMI: BGP session state: ${got}"
+counts="$(gn subscribe --mode once --format flat --path /bgp/state/evpn/route-count)"
+for t in 2 3 5; do
+    grep -Eq "route-count\[route-type=${t}\]/count: [1-9]" <<<"${counts}" ||
+        fail "gNMI: no type-${t} routes counted: ${counts}"
+done
+got="$(gn get --encoding proto --format flat --path '/interfaces/interface[name=eth1]/state/counters/in-pkts')"
+grep -Eq 'in-pkts: [1-9]' <<<"${got}" || fail "gNMI: OpenConfig in-pkts of eth1: ${got}"
+got="$(gn get --encoding proto --format flat --path '/telemetry/vni[id=100]/rx/packets')"
+grep -Eq 'packets: [1-9]' <<<"${got}" || fail "gNMI: tarvos-telemetry VNI 100: ${got}"
+# ON_CHANGE: red1 goes down while subscribed
+gnmi_out="$(mktemp)"
+gn subscribe --stream-mode on-change --format flat \
+    --path '/interfaces/interface[name=red1]/state/oper-status' >"${gnmi_out}" 2>&1 &
+sub_pid=$!
+sleep 4
+docker exec "leaf1-${ID}" ip link set red1 down
+for _ in $(seq 1 15); do grep -q 'oper-status: DOWN' "${gnmi_out}" && break; sleep 1; done
+docker exec "leaf1-${ID}" ip link set red1 up
+kill "${sub_pid}" 2>/dev/null || true
+if ! grep -q 'oper-status: UP' "${gnmi_out}" || ! grep -q 'oper-status: DOWN' "${gnmi_out}"; then
+    fail "gNMI ON_CHANGE: $(cat "${gnmi_out}")"
+fi
+rm -f "${gnmi_out}"
+if gnmic -a "127.0.0.1:${gnmi_port}" -u admin -p wrong --skip-verify --timeout 10s capabilities >/dev/null 2>&1; then
+    fail "gNMI accepted a wrong password"
+fi
 
 echo "== NETCONF operational data from mgmtd (frr-vrf state)"
 python3 - "$(port 1)" <<'EOF' || fail "no frr-vrf operational data over NETCONF"

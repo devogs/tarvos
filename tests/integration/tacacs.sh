@@ -20,6 +20,7 @@ NAME_RW="tarvos-tacacs-rw-$$"
 SSH_HOST_PORT="${SSH_HOST_PORT:-2223}"
 NETCONF_HOST_PORT="${NETCONF_HOST_PORT:-8301}"
 NETCONF_RW_HOST_PORT="${NETCONF_RW_HOST_PORT:-8302}"
+GNMI_HOST_PORT="${GNMI_HOST_PORT:-57401}"
 NETCONF_ACCESS="$(dirname "$0")/netconf_access.py"
 # shellcheck disable=SC2054 # the comma is part of an ssh option value
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
@@ -62,7 +63,7 @@ run_tarvos() { # name ssh-port netconf-port [extra docker args...]
         "$@" -p "${ssh_port}:22" -p "${nc_port}:830" "${IMAGE}" >/dev/null
 }
 
-run_tarvos "${NAME}" "${SSH_HOST_PORT}" "${NETCONF_HOST_PORT}"
+run_tarvos "${NAME}" "${SSH_HOST_PORT}" "${NETCONF_HOST_PORT}" -p "127.0.0.1:${GNMI_HOST_PORT}:57400"
 # second instance, TACACS+ users with NETCONF write access (SSH port unused by the tests)
 run_tarvos "${NAME_RW}" "$((SSH_HOST_PORT + 1))" "${NETCONF_RW_HOST_PORT}" -e TACACS_NETCONF_ACCESS=rw
 
@@ -137,6 +138,12 @@ done
 
 echo "== local admin still works with TACACS+ configured"
 [ "$(ssh_as admin admin 'echo local-ok')" = "local-ok" ] || fail "admin login failed"
+
+echo "== gNMI: TACACS+ user authenticated through PAM (service gnmi), wrong password rejected"
+gnmi_as() { gnmic -a "127.0.0.1:${GNMI_HOST_PORT}" -u "$1" -p "$2" --skip-verify --timeout 20s capabilities; }
+for _ in $(seq 1 30); do gnmi_as admin admin >/dev/null 2>&1 && break; sleep 1; done
+gnmi_as alice alicepw | grep -q 'tarvos-aaa' || fail "alice cannot use gNMI"
+if gnmi_as alice wrongpw >/dev/null 2>&1; then fail "gNMI accepted a wrong TACACS+ password"; fi
 
 echo "== tarvos-aaa state over NETCONF: probes, active server, last authentications"
 [ "$(ssh_as alice alicepw 'echo again')" = "again" ] || fail "alice could not log in"

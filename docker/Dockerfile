@@ -119,13 +119,14 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip uninstall -y pip setuptools
 
 # ---------------------------------------------------------------------------
-# Telemetry agent: eBPF programs (C, GPL) compiled with clang, Go agent (static binary).
+# Telemetry agent: eBPF programs (C, GPL) compiled with clang; Go agent with the
+# Prometheus exporter and gNMI server (linked against libpam).
 # ---------------------------------------------------------------------------
 FROM golang:1.24-bookworm AS telemetry
 
 # hadolint ignore=DL3008
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends clang llvm libbpf-dev \
+    && apt-get install -y --no-install-recommends clang llvm libbpf-dev libpam0g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src/telemetry
@@ -134,8 +135,9 @@ RUN go mod download
 COPY telemetry/ ./
 COPY VERSION /src/VERSION
 # Regenerate the eBPF object from source (the committed one only serves go test/vet).
+# cgo: the gNMI server authenticates through libpam (runtime: libpam0g).
 RUN go generate ./internal/bpf \
-    && CGO_ENABLED=0 go build -trimpath \
+    && CGO_ENABLED=1 go build -trimpath \
         -ldflags="-s -w -X main.version=$(tr -d '[:space:]' < /src/VERSION)" \
         -o /out/tarvos-telemetry ./cmd/tarvos-telemetry
 
@@ -187,7 +189,7 @@ COPY scripts/ /opt/tarvos/scripts/
 COPY daemons/ /opt/tarvos/daemons/
 RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py /opt/tarvos/daemons/*.py
 
-EXPOSE 22 830 9273
+EXPOSE 22 830 9273 57400
 VOLUME ["/opt/tarvos/yangs"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

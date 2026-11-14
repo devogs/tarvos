@@ -122,7 +122,12 @@ start kernel_sync python3 "${DAEMONS_DIR}/kernel_sync.py"
 # eBPF telemetry agent (counters for the Prometheus and gNMI exporters). Not critical:
 # without CAP_BPF/CAP_PERFMON or kernel BTF it logs why and the node keeps working.
 case "${TELEMETRY_ENABLED:-yes}" in
-    yes | true | 1) start telemetry /usr/local/bin/tarvos-telemetry run ;;
+    yes | true | 1)
+        # YANG list keys and module list for the gNMI server (all modules are registered).
+        python3 "${SCRIPTS_DIR}/yang_index.py" /run/tarvos/yang-index.json ||
+            log "WARNING: YANG index failed; gNMI serves Sysrepo data as JSON only"
+        start telemetry /usr/local/bin/tarvos-telemetry run
+        ;;
     *) log "telemetry disabled (TELEMETRY_ENABLED=${TELEMETRY_ENABLED})" ;;
 esac
 # Optional user-selected daemons
