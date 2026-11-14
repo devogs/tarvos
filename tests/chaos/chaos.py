@@ -123,7 +123,11 @@ def check_invariants(lab: Lab, base: Baseline, deadline: float = DEADLINE) -> tu
         for node in ("leaf1", "leaf2"):
             try:
                 counts = evpn_counts(lab, node)
-                if counts != base.evpn[node]:
+                # type-2 follows host traffic (MACs learned and aged): only types 3 and 5
+                # must be back to their reference values, and type-2 routes present
+                stable = {t: c for t, c in counts.items() if t != 2}
+                reference = {t: c for t, c in base.evpn[node].items() if t != 2}
+                if stable != reference or not counts.get(2):
                     failures[f"3 control plane {node} EVPN"] = f"{counts} != {base.evpn[node]}"
             except Exception as exc:  # noqa: BLE001
                 failures[f"3 control plane {node} EVPN"] = str(exc)[:120]
