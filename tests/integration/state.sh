@@ -141,8 +141,9 @@ counts="$(xml_value "${reply}" '" ".join(f("rule/name") + f("rule/state/matched-
 read -r n1 n2 m1 m2 d1 d2 <<<"${counts}"
 [ "${n1} ${n2}" = "netconf junk" ] || fail "nft state: rules ${n1} ${n2}"
 [ "${m1}" -gt 0 ] || fail "nft state: no NETCONF packets matched"
-[ "${m2}" -ge 150 ] && [ "${d2}" -gt 100 ] && [ "${d1}" -eq 0 ] ||
+if [ "${m2}" -lt 150 ] || [ "${d2}" -le 100 ] || [ "${d1}" -ne 0 ]; then
     fail "nft state: junk matched ${m2}, dropped ${d2} (netconf dropped ${d1})"
+fi
 echo "   netconf matched ${m1}; junk matched ${m2}, dropped ${d2}"
 
 echo "== tarvos-nftables: disabling removes the table"

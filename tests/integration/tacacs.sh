@@ -177,8 +177,10 @@ aaa_edit "<aaa ${NSA}><tacacs><server><address>${gateway}</address><secret>testk
 [ "$(ssh_as alice alicepw 'echo runtime-ok')" = "runtime-ok" ] ||
     fail "alice could not log in through the NETCONF-configured server"
 state="$(aaa_state)"
-[ "$(aaa_field server-source <<<"${state}")" = "netconf" ] &&
-    [ "$(aaa_field active-servers <<<"${state}")" = "1" ] || fail "aaa: ${state}"
+if [ "$(aaa_field server-source <<<"${state}")" != "netconf" ] ||
+    [ "$(aaa_field active-servers <<<"${state}")" != "1" ]; then
+    fail "aaa: ${state}"
+fi
 aaa_edit "<aaa ${NSA} xmlns:nc=\"urn:ietf:params:xml:ns:netconf:base:1.0\" nc:operation=\"remove\"/>"
 [ "$(aaa_field server-source <<<"$(aaa_state)")" = "environment" ] ||
     fail "aaa: removing the servers did not restore TACACS_SERVER"
