@@ -26,9 +26,14 @@ def test_netconf_servers_replace_the_environment_with_their_own_secrets():
     assert "server=192.0.2.1 secret=k1 server=2001:db8::1 secret=k2" in pam
 
 
-def test_same_secret_keeps_the_classic_argument_order():
-    settings = AaaSettings(("192.0.2.1", "192.0.2.2"), "", 3, ("k", "k"))
-    assert "server=192.0.2.1 server=192.0.2.2 secret=k " in render_pam(settings, with_session=False)
+def test_every_server_gets_its_secret():
+    # v2.1.1 day-2 finding: "server=A server=B secret=K" left A without a key in
+    # pam_tacplus 1.7 (unobfuscated request, every login fell through to B)
+    for settings in (AaaSettings(("192.0.2.1", "192.0.2.2"), "", 3, ("k", "k")),
+                     AaaSettings(("192.0.2.1", "192.0.2.2"), "k", 3)):  # fmt: skip
+        pam = render_pam(settings, with_session=False)
+        assert "server=192.0.2.1 secret=k server=192.0.2.2 secret=k " in pam
+        assert " encrypt" not in pam
 
 
 def test_disabling_local_fallback():
@@ -36,7 +41,7 @@ def test_disabling_local_fallback():
         effective(AaaSettings((), "", 3), {"aaa": {"local-fallback": {"enabled": False}}})
     settings, _ = effective(BASE, {"aaa": {"local-fallback": {"enabled": False}}})
     pam = render_pam(settings, with_session=True)
-    assert pam.splitlines()[1] == "auth requisite pam_succeed_if.so quiet user != admin"
+    assert "auth requisite pam_succeed_if.so quiet user != admin" in pam.splitlines()[1:4]
     assert "account requisite pam_succeed_if.so quiet user != admin" in pam
 
 

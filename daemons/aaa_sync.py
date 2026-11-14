@@ -68,10 +68,11 @@ def effective(base: AaaSettings, config: dict[str, Any]) -> tuple[AaaSettings, s
             secrets = tuple(validate_secret(s.get("secret")) for s in servers)
         except (ValueError, ConfigError) as exc:
             raise BackendError(f"invalid TACACS+ server: {exc}") from None
-        settings = AaaSettings(addresses, "", timeout, secrets, fallback)
+        settings = AaaSettings(addresses, "", timeout, secrets, fallback, base.netconf_access)
         source = "netconf"
     else:
-        settings = AaaSettings(base.servers, base.secret, timeout, (), fallback)
+        access = base.netconf_access
+        settings = AaaSettings(base.servers, base.secret, timeout, (), fallback, access)
         source = "environment"
     if not settings.local_fallback and not settings.tacacs_enabled:
         raise BackendError(
@@ -187,6 +188,9 @@ class AaaBackend:
             servers = ", ".join(settings.servers) or "none"
             log(f"TACACS+ servers ({source}): {servers}; local fallback "
                 f"{'on' if settings.local_fallback else 'off'}")  # fmt: skip
+            if not settings.local_fallback:
+                log("WARNING: local fallback disabled: admin logins are denied; if no TACACS+ "
+                    "server answers nobody can log in (recover with docker exec)")  # fmt: skip
         with self.lock:
             self.settings, self.source = settings, source
             self.probes = {a: p for a, p in self.probes.items() if a in settings.servers}

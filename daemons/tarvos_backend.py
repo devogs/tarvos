@@ -27,6 +27,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from tarvos_common import log as _log
+from tarvos_common import operator_message
 
 IN_FLIGHT_TIMEOUT = 120.0  # a lost "done" event must not stop periodic re-application
 
@@ -149,7 +150,7 @@ def _subscribe(connection: Any, session: Any, runner: Runner) -> bool:
         try:
             runner.on_change(event, lambda: _read(event_session, backend.xpath), read_running)
         except BackendError as exc:
-            error = SysrepoCallbackFailedError(str(exc))
+            error = SysrepoCallbackFailedError(operator_message(str(exc)))
             event_session.set_error(error)
             raise error from exc
 

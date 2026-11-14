@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.environ.get("SCRIPTS_DIR", "/opt/tarvos/scripts"))
 
 from tarvos_common import log as _log  # noqa: E402
+from tarvos_common import operator_message  # noqa: E402
 from tarvos_frr import frrconf, mgmtd, state  # noqa: E402
 from tarvos_frr import vtysh as frr_tools  # noqa: E402
 from tarvos_frr.frrconf import Rendered  # noqa: E402
@@ -253,7 +254,7 @@ def main() -> int:
             except (ConfigError, mgmtd.MgmtdError, frr_tools.FrrError) as exc:
                 # Whole-module subscriptions: sysrepo-python only forwards the message
                 # for xpath subscriptions, so report it on the event session here.
-                error = SysrepoCallbackFailedError(str(exc))
+                error = SysrepoCallbackFailedError(operator_message(str(exc)))
                 event_session.set_error(error)
                 raise error from exc
 

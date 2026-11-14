@@ -25,6 +25,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from typing import Any
 sys.path.insert(0, os.environ.get("SCRIPTS_DIR", "/opt/tarvos/scripts"))
 
 from tarvos_common import log as _log  # noqa: E402
+from tarvos_common import operator_message  # noqa: E402
 
 MODULES = ("tarvos-vrf", "tarvos-vxlan")
 ALIAS = "tarvos"
@@ -384,11 +386,43 @@ def fdb_state() -> list[dict[str, Any]]:
     return json.loads(result.stdout or "[]")
 
 
-def execute(commands: list[list[str]]) -> None:
+def batches(commands: list[list[str]]) -> list[tuple[str, list[list[str]]]]:
+    """Consecutive commands of the same tool (ip, bridge), order kept: one process per
+    batch ("ip -batch -") instead of one per command (100 VNIs are 400+ commands)."""
+    out: list[tuple[str, list[list[str]]]] = []
     for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+        tool = command[0]
+        if out and out[-1][0] == tool and tool in ("ip", "bridge"):
+            out[-1][1].append(command)
+        else:
+            out.append((tool, [command]))
+    return out
+
+
+def execute(commands: list[list[str]]) -> None:
+    for tool, group in batches(commands):
+        if tool not in ("ip", "bridge") or len(group) == 1:
+            for command in group:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30,
+                                        check=False)  # fmt: skip
+                if result.returncode != 0:
+                    raise NetdevError(f"{' '.join(command)}: {result.stderr.strip() or 'failed'}")
+            continue
+        # Global options (ip -4/-6) must come before -batch; they are per command here,
+        # so batch only commands without them.
+        if any(c[1].startswith("-") for c in group):
+            for command in group:
+                execute([command])
+            continue
+        script = "".join(" ".join(c[1:]) + "\n" for c in group)
+        result = subprocess.run([tool, "-batch", "-"], input=script, capture_output=True,
+                                text=True, timeout=120, check=False)  # fmt: skip
         if result.returncode != 0:
-            raise NetdevError(f"{' '.join(command)}: {result.stderr.strip() or 'failed'}")
+            failed = re.search(r"Command failed -:(\d+)", result.stderr)
+            index = int(failed.group(1)) - 1 if failed else None
+            what = " ".join(group[index]) if index is not None and index < len(group) else tool
+            message = result.stderr.strip().splitlines()[0] if result.stderr.strip() else "failed"
+            raise NetdevError(f"{what}: {message}")
 
 
 # -- operational state -----------------------------------------------------------------
@@ -598,7 +632,7 @@ def main() -> int:
                     with connection.start_session("running") as running:
                         agent.reconcile(running, quiet=True)
             except NetdevError as exc:
-                error = SysrepoCallbackFailedError(str(exc))
+                error = SysrepoCallbackFailedError(operator_message(str(exc)))
                 event_session.set_error(error)
                 raise error from exc
 

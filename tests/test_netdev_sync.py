@@ -239,3 +239,43 @@ def test_management_default_route_restored_only_when_missing(tmp_path):
     assert mgmt_route_plan(state, {4: [{"dst": "default", "gateway": "10.0.0.1"}], 6: []}) == []
     assert mgmt_route_plan(read_mgmt_state(str(tmp_path / "absent")), {4: [], 6: []}) == []
     assert mgmt_route_plan({**state, "MGMT_GW4": "x; rm -rf /"}, {4: [], 6: []}) == []
+
+
+def test_commands_are_batched_per_tool_in_order(monkeypatch):
+    # v2.1.1 day-2 finding: removing 100 VNIs (one ip process per command) outlasted the
+    # 5 s Sysrepo callback timeout
+    import subprocess
+
+    import netdev_sync
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs.get("input")))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(netdev_sync.subprocess, "run", run)
+    netdev_sync.execute([
+        ["ip", "link", "del", "vx1"], ["ip", "link", "del", "br1"],
+        ["bridge", "link", "set", "dev", "vx2", "learning", "off"],
+        ["ip", "link", "set", "dev", "vx2", "up"],
+        ["ip", "-4", "route", "replace", "unreachable", "default", "table", "10"],
+    ])  # fmt: skip
+    assert calls[0] == (["ip", "-batch", "-"], "link del vx1\nlink del br1\n")
+    assert calls[1][0][:2] == ["bridge", "link"]  # single command: run as is
+    assert calls[2][0] == ["ip", "link", "set", "dev", "vx2", "up"]
+    assert calls[3][0][:2] == ["ip", "-4"]
+
+
+def test_batch_error_names_the_failing_command(monkeypatch):
+    import subprocess
+
+    import netdev_sync
+
+    def run(args, **kwargs):
+        stderr = 'Cannot find device "br9"\nCommand failed -:2\n'
+        return subprocess.CompletedProcess(args, 1, "", stderr)
+
+    monkeypatch.setattr(netdev_sync.subprocess, "run", run)
+    with pytest.raises(NetdevError, match="ip link del br9: Cannot find device"):
+        netdev_sync.execute([["ip", "link", "del", "vx9"], ["ip", "link", "del", "br9"]])

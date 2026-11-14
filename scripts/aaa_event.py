@@ -17,12 +17,13 @@ import json
 import os
 import re
 import sys
+import syslog
 import tempfile
 import time
 
 STATE_DIR = os.environ.get("AAA_STATE_DIR", "/run/tarvos/aaa")
 METHODS = ("tacacs", "local")
-RESULTS = ("success", "failure")
+RESULTS = ("success", "failure", "locked-out")
 _SAFE = re.compile(r"^[A-Za-z0-9_.@:%+-]{1,64}$")
 
 
@@ -75,6 +76,14 @@ def main(argv: list[str]) -> int:
     try:
         method, result = argv[1], argv[2]
         if method in METHODS and result in RESULTS and os.environ.get("PAM_TYPE") == "auth":
+            if result == "locked-out":
+                # local fallback disabled: admin is refused before any password check
+                user = clean(os.environ.get("PAM_USER")) or "?"
+                rhost = clean(os.environ.get("PAM_RHOST")) or "?"
+                syslog.syslog(syslog.LOG_WARNING, f"login of {user} from {rhost} denied: local "
+                              "fallback is disabled (tarvos-aaa local-fallback); only TACACS+ "
+                              "users can log in, recover with docker exec")  # fmt: skip
+                result = "failure"
             write(STATE_DIR, method, event(method, result, dict(os.environ), time.time()))
             count(STATE_DIR, method, result)
     except Exception:  # noqa: S110 - must never break a login

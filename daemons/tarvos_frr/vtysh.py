@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -32,8 +33,19 @@ def _run(args: list[str], timeout: int = TIMEOUT) -> subprocess.CompletedProcess
         raise FrrError(f"{args[0]} timed out after {timeout}s") from exc
 
 
+# frr-reload progress lines and its log prefix ("2026-11-14 19:41:55,103   ERROR: ").
+_PROGRESS = re.compile(r"^\[\d+\|[\w-]+\] (sending configuration|done)$|^Waiting for children")
+_LOG_PREFIX = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+\s+(ERROR|WARNING|INFO):\s*")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 def _clean(text: str) -> str:
-    lines = [line for line in text.splitlines() if line.strip() and line.strip() not in NOISE]
+    """The operator-facing part of FRR tool output: no colours, progress or timestamps."""
+    lines = []
+    for raw in _ANSI.sub("", text).splitlines():
+        line = _LOG_PREFIX.sub("", raw.strip())
+        if line and line not in NOISE and not _PROGRESS.match(line) and line not in lines:
+            lines.append(line)
     return "\n".join(lines).strip()
 
 

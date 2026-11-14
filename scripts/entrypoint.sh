@@ -20,18 +20,54 @@ case "${LOG_LEVEL}" in
     *) DAEMON_VERBOSITY="info" ;;
 esac
 
-# name:pid of supervised foreground daemons
-declare -A PIDS=()
-# frr_sync is critical: without it NETCONF would accept FRR configuration it never applies.
-CRITICAL=(sshd sysrepo-plugind netopeer2-server frr_sync)
+# name:pid and name:command of supervised foreground daemons
+declare -A PIDS=() CMDS=() RESTARTS=() WINDOW=()
+# Critical daemons: without them the node cannot be managed, or NETCONF would accept
+# configuration nobody applies. They are restarted like the others, but a crash loop
+# (CRASH_LOOP_MAX restarts within CRASH_LOOP_WINDOW seconds) stops the container so the
+# orchestrator can restart it.
+CRITICAL=(sshd sysrepo-plugind netopeer2-server frr_sync netdev_sync kernel_sync)
+CRASH_LOOP_MAX="${CRASH_LOOP_MAX:-5}"
+CRASH_LOOP_WINDOW="${CRASH_LOOP_WINDOW:-120}"
 shutting_down=0
 
 start() {
     local name="$1"
     shift
+    CMDS["${name}"]="$(printf '%q ' "$@")"
     "$@" &
     PIDS["${name}"]=$!
     log "started ${name} (pid ${PIDS[${name}]})"
+}
+
+is_critical() {
+    local c
+    for c in "${CRITICAL[@]}"; do [ "$c" = "$1" ] && return 0; done
+    return 1
+}
+
+# restart <name>: start a daemon again after it exited, with a short backoff (1 s per
+# recent restart, at most 10 s). Returns 1 when a critical daemon is crash looping.
+restart() {
+    local name="$1" now
+    now=$(date +%s)
+    if [ $((now - ${WINDOW[${name}]:-0})) -gt "${CRASH_LOOP_WINDOW}" ]; then
+        WINDOW["${name}"]=${now}
+        RESTARTS["${name}"]=0
+    fi
+    RESTARTS["${name}"]=$((${RESTARTS[${name}]:-0} + 1))
+    if is_critical "${name}" && [ "${RESTARTS[${name}]}" -gt "${CRASH_LOOP_MAX}" ]; then
+        log "critical daemon ${name} restarted ${CRASH_LOOP_MAX} times in ${CRASH_LOOP_WINDOW}s: giving up"
+        return 1
+    fi
+    local delay=$((RESTARTS[${name}] < 10 ? RESTARTS[${name}] : 10))
+    log "${name} exited; restarting in ${delay}s (restart ${RESTARTS[${name}]})"
+    sleep "${delay}" &
+    wait $! 2>/dev/null || true # interruptible: SIGTERM is handled at once
+    [ "${shutting_down}" -eq 1 ] && return 0
+    eval "${CMDS[${name}]} &"
+    PIDS["${name}"]=$!
+    log "restarted ${name} (pid ${PIDS[${name}]})"
 }
 
 stop_all() {
@@ -83,7 +119,11 @@ if [ ! -f "${hostkey_marker}" ]; then
     fi
 fi
 "${SCRIPTS_DIR}/netconf_configure.sh" || log "WARNING: NETCONF listener configuration failed"
-start netopeer2-server netopeer2-server -d -v "${DAEMON_VERBOSITY}"
+# -t: timeout of every Sysrepo call made for a NETCONF request, including the backends'
+# change callbacks (Sysrepo's default, 5 s, is too short for large edits: 100 VNIs).
+NETCONF_TIMEOUT="${NETCONF_TIMEOUT:-120}"
+[[ "${NETCONF_TIMEOUT}" =~ ^[0-9]{1,4}$ ]] || NETCONF_TIMEOUT=120
+start netopeer2-server netopeer2-server -d -v "${DAEMON_VERBOSITY}" -t "${NETCONF_TIMEOUT}"
 
 lldp_running=0
 # --- 4b. LLDP (lldpd); optional and never fatal -----------------------------------
@@ -146,15 +186,16 @@ done
 
 log "Tarvos is up"
 
-# --- Supervise: exit (so the orchestrator restarts us) if a critical daemon dies --
+# --- Supervise: restart any daemon that exits; stop on a critical crash loop -------
 while true; do
     wait -n || true
     [ "${shutting_down}" -eq 1 ] && exit 0
-    for name in "${CRITICAL[@]}"; do
+    for name in "${!PIDS[@]}"; do
         if ! kill -0 "${PIDS[${name}]}" 2>/dev/null; then
-            log "critical daemon ${name} exited"
-            stop_all
-            exit 1
+            if ! restart "${name}"; then
+                stop_all
+                exit 1
+            fi
         fi
     done
 done
