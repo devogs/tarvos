@@ -222,15 +222,17 @@ got="$(gn get --encoding proto --format flat --path '/telemetry/container/proces
 grep -Eq 'resident-memory: [1-9]' <<<"${got}" || fail "gNMI: bgpd resident memory: ${got}"
 got="$(gn get --encoding proto --format flat --path '/telemetry/vni[id=100]/rx/packets')"
 grep -Eq 'packets: [1-9]' <<<"${got}" || fail "gNMI: tarvos-telemetry VNI 100: ${got}"
-# ON_CHANGE: red1 goes down while subscribed
+# ON_CHANGE: obs1 goes down while subscribed (an interface Tarvos does not own: VRF
+# member ports such as red1 are set up again by the reconciler, a race with the test)
+docker exec "leaf1-${ID}" sh -c "ip link add obs1 type dummy && ip link set obs1 up"
 gnmi_out="$(mktemp)"
 gn subscribe --stream-mode on-change --format flat \
-    --path '/interfaces/interface[name=red1]/state/oper-status' >"${gnmi_out}" 2>&1 &
+    --path '/interfaces/interface[name=obs1]/state/oper-status' >"${gnmi_out}" 2>&1 &
 sub_pid=$!
 sleep 4
-docker exec "leaf1-${ID}" ip link set red1 down
+docker exec "leaf1-${ID}" ip link set obs1 down
 for _ in $(seq 1 15); do grep -q 'oper-status: DOWN' "${gnmi_out}" && break; sleep 1; done
-docker exec "leaf1-${ID}" ip link set red1 up
+docker exec "leaf1-${ID}" ip link set obs1 up
 kill "${sub_pid}" 2>/dev/null || true
 if ! grep -q 'oper-status: UP' "${gnmi_out}" || ! grep -q 'oper-status: DOWN' "${gnmi_out}"; then
     fail "gNMI ON_CHANGE: $(cat "${gnmi_out}")"
