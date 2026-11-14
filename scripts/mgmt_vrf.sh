@@ -47,6 +47,13 @@ fi
 [ -z "${gw4}" ] || ip -4 route replace default via "${gw4}" dev "${IFACE}" table "${TABLE}" || log "WARNING: IPv4 default route not restored"
 [ -z "${gw6}" ] || ip -6 route replace default via "${gw6}" dev "${IFACE}" table "${TABLE}" || log "WARNING: IPv6 default route not restored"
 
+# Remember the management gateways: netdev_sync puts a management default route back if
+# it disappears (Docker moves the container's default gateway, and removes the route,
+# when a network is connected after boot).
+mkdir -p /run/tarvos
+printf 'MGMT_VRF_TABLE=%s\nMGMT_INTERFACE=%s\nMGMT_GW4=%s\nMGMT_GW6=%s\n' \
+    "${TABLE}" "${IFACE}" "${gw4}" "${gw6}" >/run/tarvos/mgmt-vrf.env
+
 # Outbound connections (syslog, TACACS+) from sockets not bound to the VRF only consult
 # the main table, which no longer holds the management routes: fall through to them.
 # The rule comes after main (32766) and default (32767): the management table has a

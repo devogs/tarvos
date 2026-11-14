@@ -46,3 +46,25 @@ def test_can_be_disabled():
 )
 def test_invalid_input_disables_lldp(env):
     assert not load_settings(env).enabled
+
+
+def test_system_name_defaults_to_the_hostname(monkeypatch):
+    # v2.1.0 bug: lldp_sync built its settings without the hostname and re-applied
+    # "tarvos" on every node
+    import lldp_configure
+
+    monkeypatch.setattr(lldp_configure.socket, "gethostname", lambda: "RTR-2.lab.example")
+    assert load_settings({}).system_name == "RTR-2"
+    monkeypatch.setattr(lldp_configure.socket, "gethostname", lambda: "leaf 1!")
+    assert load_settings({}).system_name == "leaf-1-"
+    monkeypatch.setattr(lldp_configure.socket, "gethostname", lambda: "")
+    assert load_settings({}).system_name == "tarvos"
+    assert load_settings({"LLDP_SYSTEM_NAME": "spine1"}).system_name == "spine1"
+
+
+def test_runtime_backend_uses_the_same_default(monkeypatch):
+    import lldp_configure
+    import lldp_sync
+
+    monkeypatch.setattr(lldp_configure.socket, "gethostname", lambda: "RTR-3")
+    assert lldp_sync.Agent(session=None).base.system_name == "RTR-3"

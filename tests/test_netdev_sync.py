@@ -76,16 +76,29 @@ def test_plan_from_scratch_creates_in_dependency_order():
 def test_plan_converged_only_refreshes():
     links = [
         _link("RED", "vrf", ALIAS, table=1010),
-        {**_link("br100", "bridge", ALIAS, "RED"), "address": "00:00:5e:00:01:01"},
-        _link("vx100", "vxlan", ALIAS, "br100", id=100, local="10.255.0.1", port=4789),
-        _link("br5000", "bridge", ALIAS, "RED"),
-        _link("vx5000", "vxlan", ALIAS, "br5000", id=5000, local="10.255.0.1", port=4789),
+        {**_link("br100", "bridge", ALIAS, "RED"), "address": "00:00:5e:00:01:01", "mtu": 1450},
+        {**_link("vx100", "vxlan", ALIAS, "br100", id=100, local="10.255.0.1", port=4789),
+         "mtu": 1450},
+        {**_link("br5000", "bridge", ALIAS, "RED"), "mtu": 1450},
+        {**_link("vx5000", "vxlan", ALIAS, "br5000", id=5000, local="10.255.0.1", port=4789),
+         "mtu": 1450},
         _link("eth2", master="br100"),
         _link("red1", "dummy", master="RED"),
     ]
     commands, _ = plan(_desired(), links, {"br100": {"10.1.100.1/24"}})
     changes = [c for c in commands if c[-1] != "up" and c[0] != "bridge"]
     assert changes == []
+
+
+def test_overlay_mtu_defaults_to_1450():
+    # v2.1.1 fix: the kernel default (1500) black-holed packets above 1450 bytes on a
+    # 1500-byte underlay
+    d = _desired()
+    assert {d.devices[n].mtu for n in ("br100", "vx100", "br5000", "vx5000")} == {1450}
+    vxlan = {"vxlan": {**VXLAN["vxlan"], "mtu": 9000}}
+    assert desired_state(VRFS, vxlan, "mgmt", 1001).devices["vx100"].mtu == 9000
+    commands, _ = plan(d, [_link("eth2"), _link("red1", "dummy")], {})
+    assert ["ip", "link", "set", "dev", "vx100", "mtu", "1450"] in commands
 
 
 def test_plan_recreates_changed_vxlan_and_removes_stale_devices():
@@ -210,3 +223,19 @@ def test_isolation_routes_added_for_each_vrf_and_removed_when_stale():
     v4, v6 = isolation_plan(d, routes)
     assert v4 == [["ip", "-4", "route", "del", *spec, "table", "2020"]]
     assert v6 == []
+
+
+def test_management_default_route_restored_only_when_missing(tmp_path):
+    from netdev_sync import mgmt_route_plan, read_mgmt_state
+
+    path = tmp_path / "mgmt-vrf.env"
+    path.write_text("MGMT_VRF_TABLE=1001\nMGMT_INTERFACE=eth0\nMGMT_GW4=172.17.0.1\nMGMT_GW6=\n")
+    state = read_mgmt_state(str(path))
+    assert mgmt_route_plan(state, {4: [], 6: []}) == [
+        ["ip", "-4", "route", "replace", "default", "via", "172.17.0.1", "dev", "eth0",
+         "table", "1001"],
+    ]  # fmt: skip
+    # any default already in the table (even another gateway) is left alone
+    assert mgmt_route_plan(state, {4: [{"dst": "default", "gateway": "10.0.0.1"}], 6: []}) == []
+    assert mgmt_route_plan(read_mgmt_state(str(tmp_path / "absent")), {4: [], 6: []}) == []
+    assert mgmt_route_plan({**state, "MGMT_GW4": "x; rm -rf /"}, {4: [], 6: []}) == []

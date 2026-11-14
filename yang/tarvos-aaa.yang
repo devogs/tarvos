@@ -86,7 +86,7 @@ module tarvos-aaa {
         units "seconds";
         default "3";
         description
-          "Time to wait for a server before failing over to the next one.";
+          "Time to wait for a server before failing over to the next one (seconds).";
       }
 
       list server {
@@ -197,7 +197,7 @@ module tarvos-aaa {
           type uint32;
           units "milliseconds";
           description
-            "TCP connection time of the last successful probe.";
+            "TCP connection time of the last successful probe (milliseconds).";
         }
         leaf last-probe {
           type yang:date-and-time;

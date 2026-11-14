@@ -35,7 +35,9 @@ module tarvos-vxlan {
 
   revision 2026-11-14 {
     description
-      "Operational state of each VNI.";
+      "Operational state of each VNI. Tarvos 2.1.1: mtu defaults to 1450
+       (was the kernel default, 1500, which black-holed packets of more than
+       1450 bytes on a 1500-byte underlay).";
   }
   revision 2026-11-13 {
     description
@@ -65,8 +67,15 @@ module tarvos-vxlan {
       type uint16 {
         range "1280..9216";
       }
+      units "bytes";
+      default "1450";
       description
-        "MTU of the VXLAN devices and their bridges. Unset: kernel default.";
+        "MTU of the VXLAN devices and their bridges (the overlay MTU), in
+         bytes. VXLAN over IPv4 adds 50 bytes, so the default 1450 fits a
+         1500-byte underlay; with a jumbo underlay, set it to the underlay
+         MTU minus 50. Larger overlay packets are then refused locally (ICMP
+         'fragmentation needed', path MTU discovery works) instead of being
+         dropped silently in the underlay.";
     }
 
     list l2vni {

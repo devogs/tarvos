@@ -64,3 +64,17 @@ def test_transaction_in_flight_until_done_or_abort():
     runner.on_change("change", lambda: {"a": 1}, lambda: {})
     runner.on_change("abort", lambda: {}, lambda: {})
     assert runner.in_flight is None
+
+
+def test_internal_error_restores_running_and_refuses():
+    class Crashing(FakeBackend):
+        def apply(self, config):
+            if config == {"bad": 1}:
+                raise OSError("disk full")
+            self.applied.append(config)
+
+    backend = Crashing()
+    runner = Runner(backend)
+    with pytest.raises(BackendError, match="disk full"):
+        runner.on_change("change", lambda: {"bad": 1}, lambda: {"good": 1})
+    assert backend.applied == [{"good": 1}]

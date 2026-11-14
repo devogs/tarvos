@@ -118,6 +118,31 @@ edit "${NODE}" <<<"<qos xmlns=\"${T}tarvos-qos\" xmlns:nc=\"${NC}\" nc:operation
     fail "qos removal refused"
 docker exec "${NODE}" tc qdisc show dev q0 | grep -q htb && fail "htb still on q0"
 
+echo "== tarvos-qos: class id 1 works (v2.1.0: it collided with htb's root class 1:1)"
+edit "${NODE}" <<EOF || fail "htb class id 1 refused"
+<qos xmlns="${T}tarvos-qos"><interface><name>q0</name><qdisc>htb</qdisc><bandwidth>10000</bandwidth>
+  <class><id>1</id><dscp>46</dscp><rate>1000</rate></class></interface></qos>
+EOF
+docker exec "${NODE}" tc class show dev q0 | grep -q 'class htb 1:1 parent 1:ffff' ||
+    fail "class 1:1 not below the root class 1:ffff"
+edit "${NODE}" <<<"<qos xmlns=\"${T}tarvos-qos\" xmlns:nc=\"${NC}\" nc:operation=\"remove\"/>" ||
+    fail "qos removal refused"
+docker exec "${NODE}" tc qdisc show dev q0 | grep -q htb && fail "htb still on q0 after removal"
+
+echo "== tarvos-qos: nothing half-applied, foreign qdiscs untouched"
+# What a backend killed in the middle of a build leaves: a root qdisc on an interface it
+# had recorded as owned (/run/tarvos/qos-owned.json), with no configuration behind it.
+# The next re-application (10 s) removes it; a qdisc Tarvos never installed (q2) stays.
+docker exec "${NODE}" sh -c 'for d in q1 q2; do ip link add $d type dummy && ip link set $d up &&
+    tc qdisc add dev $d root handle 1: htb default fff; done &&
+    printf "[\"q1\"]" >/run/tarvos/qos-owned.json'
+for _ in $(seq 1 25); do
+    docker exec "${NODE}" tc qdisc show dev q1 | grep -q htb || break
+    sleep 1
+done
+docker exec "${NODE}" tc qdisc show dev q1 | grep -q htb && fail "orphaned Tarvos qdisc on q1 not removed"
+docker exec "${NODE}" tc qdisc show dev q2 | grep -q htb || fail "foreign qdisc on q2 was removed"
+
 echo "== tarvos-nftables: CoPP counters"
 edit "${NODE}" <<EOF || fail "nftables configuration refused"
 <nftables xmlns="${T}tarvos-nftables"><copp>
@@ -145,6 +170,18 @@ if [ "${m2}" -lt 150 ] || [ "${d2}" -le 100 ] || [ "${d1}" -ne 0 ]; then
     fail "nft state: junk matched ${m2}, dropped ${d2} (netconf dropped ${d1})"
 fi
 echo "   netconf matched ${m1}; junk matched ${m2}, dropped ${d2}"
+
+echo "== tarvos-nftables: a refused edit keeps the active rule set"
+before="$(docker exec "${NODE}" nft list table inet tarvos | grep -c 'comment "tarvos:')"
+msg="$(edit "${NODE}" <<EOF
+<nftables xmlns="${T}tarvos-nftables"><copp>
+  <rule><name>bad</name><protocol>udp</protocol><destination-port>53</destination-port>
+    <action>rate-limit</action></rule>
+</copp></nftables>
+EOF
+)" && fail "rate-limit rule without max-pps accepted"
+after="$(docker exec "${NODE}" nft list table inet tarvos | grep -c 'comment "tarvos:')"
+[ "${before}" = "${after}" ] || fail "refused edit changed the CoPP table (${before} -> ${after} rules): ${msg}"
 
 echo "== tarvos-nftables: disabling removes the table"
 edit "${NODE}" <<<"<nftables xmlns=\"${T}tarvos-nftables\"><copp><enabled>false</enabled></copp></nftables>" ||

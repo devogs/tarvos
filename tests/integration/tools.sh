@@ -203,4 +203,25 @@ with manager.connect(host="127.0.0.1", port=int(sys.argv[1]), username="admin", 
     m.edit_config(target="running", config=cfg)
 EOF
 x ip route show table 1010 | grep -q unreachable && fail "isolation route of RED left behind"
+echo "== management VRF keeps its default route when Docker connects a network after boot"
+# eth0 on a user-defined network, then two more networks: Docker moves the container's
+# default gateway (to the alphabetically first network) and removes the management
+# default route; netdev_sync restores it (v2.1.1 fix), so NETCONF keeps answering.
+NODE2="tools2-${ID}"
+docker run -d --name "${NODE2}" --network "tvtdef-${ID}" \
+    --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN \
+    --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
+    -p "127.0.0.1::830" -e "FRR_DAEMONS=" -e TELEMETRY_ENABLED=no -e LLDP_ENABLED=no \
+    "${IMAGE}" >/dev/null
+PEERS+=("${NODE2}")
+wait_for 90 "${NODE2}: netdev-sync did not start" \
+    sh -c "docker logs ${NODE2} 2>&1 | grep -q 'netdev-sync\] serving'"
+docker network connect "tvtred-${ID}" "${NODE2}"
+docker network connect "tvtcust-${ID}" "${NODE2}"
+wait_for 30 "${NODE2}: management default route not restored" \
+    sh -c "docker exec ${NODE2} ip route show table 1001 | grep -q '^default via ${SUBNET[def]}.1 '"
+port2="$(docker port "${NODE2}" 830/tcp | head -n1 | sed 's/.*://')"
+python3 "${HERE}/netconf_caps.py" 127.0.0.1 "${port2}" admin admin tarvos-vrf >/dev/null ||
+    fail "${NODE2}: NETCONF unreachable after a network was connected"
+
 echo "PASS (toolbox in default, mgmt and two tenant VRFs, as root, admin and tacacs)"

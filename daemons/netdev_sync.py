@@ -40,6 +40,7 @@ from tarvos_common import log as _log  # noqa: E402
 MODULES = ("tarvos-vrf", "tarvos-vxlan")
 ALIAS = "tarvos"
 DEFAULT_PORT = 4789
+DEFAULT_MTU = 1450  # tarvos-vxlan default: 1500-byte underlay minus 50 of VXLAN/IPv4
 RECONCILE_INTERVAL = float(os.environ.get("NETDEV_RECONCILE_INTERVAL", "10"))
 IN_FLIGHT_TIMEOUT = 120.0
 KIND_ORDER = {"vxlan": 0, "bridge": 1, "vrf": 2}  # deletion order; creation is reversed
@@ -109,7 +110,7 @@ def desired_state(
     conf = vxlan.get("vxlan") or {}
     local = conf.get("source-address")
     port = int(conf.get("udp-port", DEFAULT_PORT))
-    mtu = int(conf["mtu"]) if conf.get("mtu") else None
+    mtu = int(conf.get("mtu") or DEFAULT_MTU)
     segments = [(entry, True) for entry in conf.get("l2vni") or []]
     segments += [(entry, False) for entry in conf.get("l3vni") or []]
     for entry, layer2 in segments:
@@ -295,6 +296,61 @@ def isolation_routes() -> dict[int, list[dict[str, Any]]]:
         except NetdevError:
             routes[family] = []  # IPv6 disabled
     return routes
+
+
+MGMT_STATE = os.environ.get("MGMT_VRF_STATE", "/run/tarvos/mgmt-vrf.env")
+
+
+def read_mgmt_state(path: str = MGMT_STATE) -> dict[str, str]:
+    """Gateways mgmt_vrf.sh moved into the management table at boot (KEY=value lines)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return {}
+    return dict(line.split("=", 1) for line in lines if "=" in line)
+
+
+def mgmt_route_plan(
+    state: dict[str, str], routes: dict[int, list[dict[str, Any]]]
+) -> list[list[str]]:
+    """Commands restoring the management default route(s) recorded at boot when the
+    management table has none at all (``routes``: ``ip -j -<f> route show table <t>
+    default``). A default route present in that table, whatever it is, is left alone."""
+    table, iface = state.get("MGMT_VRF_TABLE", ""), state.get("MGMT_INTERFACE", "")
+    if not table.isdigit() or not iface:
+        return []
+    commands = []
+    for family, key in ((4, "MGMT_GW4"), (6, "MGMT_GW6")):
+        gateway = state.get(key, "")
+        if not gateway or routes.get(family):
+            continue
+        try:
+            ipaddress.ip_address(gateway)
+        except ValueError:
+            continue
+        commands.append(["ip", f"-{family}", "route", "replace", "default", "via", gateway,
+                         "dev", iface, "table", table])  # fmt: skip
+    return commands
+
+
+def guard_mgmt_route() -> None:
+    state = read_mgmt_state()
+    if not state:
+        return
+    routes: dict[int, list[dict[str, Any]]] = {}
+    for family in (4, 6):
+        try:
+            routes[family] = _ip_json(f"-{family}", "route", "show", "table",
+                                      state.get("MGMT_VRF_TABLE", "0"), "default")  # fmt: skip
+        except NetdevError:
+            routes[family] = [{"unknown": True}]  # cannot tell: do nothing
+    for command in mgmt_route_plan(state, routes):
+        try:
+            execute([command])
+            log(f"management default route restored ({' '.join(command[3:])})")
+        except NetdevError as exc:
+            log(f"WARNING: cannot restore the management default route: {exc}")
 
 
 def _ip_json(*args: str) -> list[dict[str, Any]]:
@@ -564,6 +620,10 @@ def main() -> int:
                 log(f"WARNING: no operational data for {xpath} ({exc})")
         log("serving tarvos-vrf, tarvos-vxlan")
         while not stop.wait(RECONCILE_INTERVAL):
+            try:
+                guard_mgmt_route()
+            except Exception as exc:  # keep the loop alive
+                log(f"ERROR: management route guard: {exc}")
             if agent.busy():
                 continue
             try:

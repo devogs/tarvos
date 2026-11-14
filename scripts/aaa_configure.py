@@ -188,13 +188,42 @@ def render_ato_conf() -> str:
 
 
 # --------------------------------------------------------------------------- side effects
-def write_file(root: Path, path: str, content: str, mode: int) -> None:
+def _stage(root: Path, path: str, content: str, mode: int) -> tuple[Path, Path]:
+    """Write ``content`` to a temporary file next to ``path``; returns (temp, target)."""
     target = root / path.lstrip("/")
     target.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w") as handle:
-        handle.write(content)
-    os.chmod(target, mode)
+    temp = target.with_name(f".{target.name}.tarvos-new")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, mode)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    return temp, target
+
+
+def write_files(root: Path, files: list[tuple[str, str, int]]) -> None:
+    """Replace several files all together: every file is staged first and only then
+    renamed into place (rename is atomic), so a failure leaves all the old files, and a
+    reader (PAM during a login) never sees a truncated file."""
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for path, content, mode in files:
+            staged.append(_stage(root, path, content, mode))
+    except BaseException:
+        for temp, _target in staged:
+            temp.unlink(missing_ok=True)
+        raise
+    for temp, target in staged:
+        os.replace(temp, target)
+
+
+def write_file(root: Path, path: str, content: str, mode: int) -> None:
+    write_files(root, [(path, content, mode)])
 
 
 def set_admin_password(password: str) -> None:
@@ -209,23 +238,23 @@ def set_admin_password(password: str) -> None:
 
 def write_auth_files(settings: AaaSettings, root: Path) -> None:
     """PAM stacks, NSS (ato) and the ato account: everything that depends on the
-    TACACS+ settings. Also used at runtime by the tarvos-aaa backend (aaa_sync)."""
+    TACACS+ settings, replaced all together (write_files). Also used at runtime by the
+    tarvos-aaa backend (aaa_sync)."""
     # PAM files carry the TACACS+ secret in module arguments: root-only, 0600.
-    write_file(root, "/etc/pam.d/sshd", render_pam(settings, with_session=True), 0o600)
     # libnetconf2 opens the PAM service named "netopeer2.conf" (not "netopeer2"); the
     # gNMI server (tarvos-telemetry) authenticates through "gnmi", the same stack.
+    files = [("/etc/pam.d/sshd", render_pam(settings, with_session=True), 0o600)]
     for service in ("netopeer2.conf", "gnmi"):
-        write_file(root, f"/etc/pam.d/{service}", render_pam(settings, with_session=False), 0o600)
+        files.append((f"/etc/pam.d/{service}", render_pam(settings, with_session=False), 0o600))
     nsswitch = root / "etc/nsswitch.conf"
     current = nsswitch.read_text() if nsswitch.exists() else "passwd: files\n"
-    write_file(
-        root,
-        "/etc/nsswitch.conf",
-        render_nsswitch(current, tacacs_enabled=settings.tacacs_enabled),
-        0o644,
-    )
+    files.append(
+        ("/etc/nsswitch.conf", render_nsswitch(current, tacacs_enabled=settings.tacacs_enabled),
+         0o644)
+    )  # fmt: skip
     if settings.tacacs_enabled:
-        write_file(root, "/etc/libnss-ato.conf", render_ato_conf(), 0o644)
+        files.append(("/etc/libnss-ato.conf", render_ato_conf(), 0o644))
+    write_files(root, files)
 
 
 def configure(env: dict[str, str], root: Path, *, set_password: bool = True) -> AaaSettings:
