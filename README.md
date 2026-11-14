@@ -23,8 +23,9 @@ Debian trixie-slim + FRRouting 10.7.1 (official packages, mgmtd) + Sysrepo/Netop
 - **AAA:** TACACS+ with ordered failover and a local break-glass `admin`.
 - **Discovery:** LLDP (lldpd) advertises the node. Manage it and read discovered neighbours over NETCONF with the `tarvos-lldp` module, or use `lldpcli show neighbors`.
 - **Isolated management plane:** `eth0` lives in VRF `mgmt` by default.
-- **Observability:** rsyslog to stdout, optional forwarding to remote collectors.
-- **Small and fast:** about 100 MB compressed, boots in under 10 s, about 90 MiB of RAM with bgpd (FRR 10.7 always runs mgmtd, zebra and staticd).
+- **Observability:** operational state over NETCONF for every model (BGP sessions, EVPN VNIs and routes, VRF/VXLAN devices, PIM/LDP/VRRP/BFD sessions, tc and CoPP counters, TACACS+ reachability), rsyslog to stdout with optional forwarding to remote collectors.
+- **QoS and CoPP over NETCONF:** tc shaping and DSCP classes (`tarvos-qos`), nftables control-plane policing (`tarvos-nftables`).
+- **Small and fast:** about 100 MB compressed, boots in under 10 s, about 105 MiB of RAM with bgpd (FRR 10.7 always runs mgmtd, zebra and staticd).
 
 ## Get the image
 
@@ -118,6 +119,10 @@ One `<edit-config>` (excerpt, see [tests/integration/netconf_evpn.py](tests/inte
 | `/tarvos-bgp:bgp/state/evpn/route[route-distinguisher prefix]` | Every EVPN route: type, MAC, IP, prefix length, path count; best path source/peer, next hops, route targets, router MAC, AS path | `show bgp l2vpn evpn json` |
 | `/tarvos-vrf:vrfs/vrf[name]/state` | Device status (`up`, `down`, `not-present`), routing table, enslaved interfaces | `ip -j -d link` |
 | `/tarvos-vxlan:vxlan/l2vni[vni]/state`, `l3vni[vni]/state` | VXLAN device status, bridge, local VTEP, remote VTEPs and remote MAC count from the VXLAN FDB, bridge ports | `ip -j -d link`, `bridge -j fdb` |
+| `/tarvos-frr:frr/state/pim/neighbor`, `ldp/neighbor`, `vrrp/router`, `bfd/peer` | PIM neighbours (uptime, holdtime, DR priority); LDP sessions (state, transport address, uptime); VRRP routers (master/backup per address family, virtual addresses, advertisement counters); BFD sessions (status, uptime, diagnostics, intervals) | `show ip pim neighbor`, `show mpls ldp neighbor`, `show vrrp`, `show bfd peers` (each only while its daemon runs) |
+| `/tarvos-qos:qos/interface[name]/state`, `class[id]/state` | Root qdisc kind and counters (packets, bytes, drops, overlimits, requeues, backlog), htb default class, per-class counters | `tc -s -j qdisc/class show` |
+| `/tarvos-nftables:nftables/copp/state`, `rule[name]/state` | CoPP table installed, rule count; per rule matched and dropped packets/bytes | `nft -j list table inet tarvos` |
+| `/tarvos-aaa:aaa/state` | TACACS+ in use and where the servers come from (`environment`/`netconf`), local fallback, per-server reachability (TCP probe of port 49) and response time, the server answering next, latest TACACS+ and local authentication (user, service, client, result, time) | probes every `AAA_PROBE_INTERVAL` s; PAM records each outcome |
 | `/tarvos-lldp:lldp/neighbors` | LLDP neighbours (see below) | lldpd |
 | `frr-interface`, `frr-vrf`, `frr-zebra`, RIB, RIP | FRR's own state | mgmtd |
 
@@ -133,6 +138,14 @@ Example: the EVPN view of a leaf.
 ```
 
 `tests/integration/netconf_state.py` is a small controller-side check that verifies sessions, VNIs and type-2/type-3/type-5 routes from these trees only.
+
+## Kernel models: QoS, CoPP, runtime AAA
+
+One backend process (`kernel_sync`) applies `tarvos-qos`, `tarvos-nftables` and `tarvos-aaa` during the NETCONF transaction: a configuration the kernel or the backend rejects comes back as an `<rpc-error>` and nothing is applied.
+
+- **`tarvos-qos` (tc):** Tarvos owns the root qdisc of every interface it lists and rebuilds it when the policy changes or the interface reappears. `htb` shapes to `bandwidth` with one htb class per configured class (`1:<id in hex>`, fq_codel leaf); unclassified traffic goes to a default class `1:fff` that gets the leftover bandwidth. `prio` uses eight bands (class priority 0-7 -> band 1-8). DSCP values are matched on the IPv4 DS field and the IPv6 traffic class. Over-subscribed rates, a rate above its ceil and a DSCP in two classes are refused. Removing an interface restores the kernel default qdisc. Interfaces that do not exist yet are applied when they appear (re-checked every `QOS_REAPPLY_INTERVAL` s).
+- **`tarvos-nftables` (CoPP):** rules go into a table owned by Tarvos, `inet tarvos` (chain `copp`, input hook, policy accept), replaced as a whole in one `nft` transaction (counters restart at zero). A `rate-limit` rule drops the excess over `max-pps` and accepts the rest. Other nftables tables are never touched.
+- **`tarvos-aaa` (PAM):** servers configured over NETCONF replace `TACACS_SERVER`/`TACACS_SECRET` (each server with its own secret) for the next SSH/NETCONF login; removing them restores the environment. `local-fallback/enabled false` rejects the `admin` login, and is itself refused while no TACACS+ server is configured.
 
 ## LLDP over NETCONF
 

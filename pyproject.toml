@@ -10,6 +10,8 @@ select = ["E", "F", "I", "B", "S", "UP"]
 "scripts/aaa_configure.py" = ["S603", "S607"]
 "daemons/lldp_sync.py" = ["S603", "S607"]
 "daemons/netdev_sync.py" = ["S603", "S607"]
+"daemons/nft_sync.py" = ["S603", "S607"]
+"daemons/qos_sync.py" = ["S603", "S607"]
 "daemons/tarvos_frr/vtysh.py" = ["S603", "S607"]
 
 [tool.pytest.ini_options]

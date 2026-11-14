@@ -140,3 +140,64 @@ def test_provider_without_bgpd():
     assert frr.calls == []
     # VNIs are zebra's: still served.
     assert provider.get(f"{state.BGP_STATE}/evpn/vni")["bgp"]["state"]["evpn"]["vni"]
+
+
+# -- tarvos-frr (fixtures: two nodes running pimd, ldpd, vrrpd and bfdd) ---------------
+
+
+@pytest.mark.parametrize(
+    "text, seconds",
+    [("00:01:19", 79), ("123:00:01", 442801), ("1d02h03m", 93780), ("2w3d04h", 1483200),
+     (42, 42), ("never", None), ("", None), ("1d02hx", None)],
+)  # fmt: skip
+def test_duration(text, seconds):
+    assert state.duration(text) == seconds
+
+
+def test_pim_ldp_bfd():
+    (pim,) = state.pim_neighbors(load("pim_neighbor.json"))
+    assert pim["interface"] == "eth1" and pim["address"] == "172.29.9.12"
+    assert pim["dr-priority"] == 1 and isinstance(pim["uptime"], int)
+    (ldp,) = state.ldp_neighbors(load("ldp_neighbor.json"))
+    assert ldp["lsr-id"] == "10.9.9.2" and ldp["state"] == "operational"
+    assert ldp["transport-address"] == "172.29.9.12" and ldp["address-family"] == "ipv4"
+    (bfd,) = state.bfd_peers(load("bfd_peers.json"))
+    assert bfd["peer-address"] == "172.29.9.12" and bfd["status"] == "up"
+    assert bfd["vrf"] == "default" and bfd["multihop"] is False
+    assert bfd["detect-multiplier"] == 3 and "local-address" not in bfd
+
+
+def test_vrrp_master_and_backup():
+    (master,) = state.vrrp_routers(load("vrrp_master.json"))
+    (backup,) = state.vrrp_routers(load("vrrp_backup.json"))
+    assert (master["interface"], master["vrid"]) == ("eth1", 10)
+    (v4,) = master["address-family"]  # IPv6 not configured: not reported
+    assert v4["name"] == "ipv4" and v4["state"] == "master"
+    assert v4["virtual-address"] == ["172.29.9.100"] and v4["macvlan-interface"] == "vrrp4-10"
+    assert v4["effective-priority"] == 120 and v4["advertisements-sent"] > 0
+    assert backup["address-family"][0]["state"] == "backup"
+
+
+class FakeDaemons:
+    def __init__(self, daemons):
+        self.daemons = set(daemons)
+        self.outputs = {
+            "show ip pim neighbor json": load("pim_neighbor.json"),
+            "show vrrp json": load("vrrp_master.json"),
+            "show bfd peers json": load("bfd_peers.json"),
+            "show mpls ldp neighbor json": load("ldp_neighbor.json"),
+        }
+
+    def running_daemons(self):
+        return self.daemons
+
+    def show_json(self, *commands):
+        return [self.outputs[c] for c in commands]
+
+
+def test_frr_daemon_state_provider():
+    provider = state.FrrDaemonState(FakeDaemons({"zebra", "pimd", "vrrpd"}))
+    pim = provider.get(f"{state.FRR_STATE}/pim")
+    assert pim["frr"]["state"]["pim"]["neighbor"][0]["address"] == "172.29.9.12"
+    assert provider.get(f"{state.FRR_STATE}/vrrp")["frr"]["state"]["vrrp"]["router"]
+    assert provider.get(f"{state.FRR_STATE}/bfd") == {}  # bfdd not running

@@ -6,6 +6,9 @@ module tarvos-aaa {
   import ietf-inet-types {
     prefix inet;
   }
+  import ietf-yang-types {
+    prefix yang;
+  }
   import ietf-netconf-acm {
     prefix nacm;
   }
@@ -17,11 +20,55 @@ module tarvos-aaa {
   description
     "Runtime AAA overrides for TACACS+ on top of the .env bootstrap defaults.
 
+     Servers configured here replace TACACS_SERVER/TACACS_SECRET (each server
+     with its own secret); removing them restores the environment. An unset
+     timeout keeps TACACS_TIMEOUT. Changes apply to the next SSH or NETCONF
+     login. Disabling the local fallback is refused while no TACACS+ server
+     is configured.
+
      Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
 
+  revision 2026-11-14 {
+    description
+      "Backend (tarvos-aaa-sync): runtime servers and local fallback. State:
+       effective settings, server reachability, latest authentications.";
+  }
   revision 2026-11-12 {
     description
       "Initial revision.";
+  }
+
+  grouping authentication-event {
+    description
+      "Outcome of one authentication.";
+    leaf result {
+      type enumeration {
+        enum success;
+        enum failure;
+      }
+      description
+        "Outcome.";
+    }
+    leaf user {
+      type string;
+      description
+        "User name.";
+    }
+    leaf service {
+      type string;
+      description
+        "PAM service ('sshd' for SSH, 'netopeer2.conf' for NETCONF).";
+    }
+    leaf remote-host {
+      type string;
+      description
+        "Client address.";
+    }
+    leaf time {
+      type yang:date-and-time;
+      description
+        "Time of the authentication.";
+    }
   }
 
   container aaa {
@@ -95,6 +142,81 @@ module tarvos-aaa {
         type uint8;
         description
           "Number of configured TACACS+ servers.";
+      }
+
+      leaf server-source {
+        type enumeration {
+          enum environment {
+            description
+              "TACACS_SERVER (no server configured here).";
+          }
+          enum netconf {
+            description
+              "/aaa/tacacs/server.";
+          }
+        }
+        description
+          "Where the TACACS+ servers in use come from.";
+      }
+
+      leaf local-fallback-active {
+        type boolean;
+        description
+          "True when the local admin account may authenticate.";
+      }
+
+      leaf active-server {
+        type inet:ip-address;
+        description
+          "First reachable server in failover order: the server that answers
+           the next authentication. Absent when none is reachable.";
+      }
+
+      list server {
+        key "address";
+        description
+          "TACACS+ servers in use, with their last reachability probe (TCP
+           connection to port 49, every AAA_PROBE_INTERVAL seconds).";
+
+        leaf address {
+          type inet:ip-address;
+          description
+            "Server address.";
+        }
+        leaf priority {
+          type uint8;
+          description
+            "Position in the failover order (1 is the primary).";
+        }
+        leaf reachable {
+          type boolean;
+          description
+            "The server accepted a TCP connection on the last probe.";
+        }
+        leaf response-time {
+          type uint32;
+          units "milliseconds";
+          description
+            "TCP connection time of the last successful probe.";
+        }
+        leaf last-probe {
+          type yang:date-and-time;
+          description
+            "Time of the last probe.";
+        }
+      }
+
+      container last-tacacs-authentication {
+        description
+          "Latest authentication answered by TACACS+.";
+        uses authentication-event;
+      }
+
+      container last-local-authentication {
+        description
+          "Latest authentication checked against the local accounts (admin,
+           or a user TACACS+ did not accept).";
+        uses authentication-event;
       }
     }
   }

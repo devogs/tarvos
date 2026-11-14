@@ -105,6 +105,11 @@ jobs:
           }
           tests/integration/evpn.sh "$LOCAL_TAG"
 
+      - name: Kernel backends and FRR daemon state over NETCONF (tc, nftables, AAA, PIM/LDP/VRRP/BFD)
+        run: |
+          sudo modprobe -a sch_htb cls_u32 macvlan 2>/dev/null || true
+          tests/integration/state.sh "$LOCAL_TAG"
+
       - name: Baseline metrics (informational, no caps)
         if: always()
         run: |

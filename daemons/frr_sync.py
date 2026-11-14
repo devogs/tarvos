@@ -7,7 +7,7 @@
 * The other daemons are configured from frr-filter, frr-route-map, frr-bgp-route-map,
   frr-bfdd, tarvos-bgp, tarvos-ospf, tarvos-isis and tarvos-frr, rendered into FRR
   configuration and applied with frr-reload.
-* Operational state of the rendered models (tarvos-bgp) is read from FRR's
+* Operational state of the rendered models (tarvos-bgp, tarvos-frr) is read from FRR's
   ``show ... json`` commands on every request (:mod:`tarvos_frr.state`).
 
 Changes are applied and verified in the Sysrepo "change" event, so a configuration that
@@ -67,6 +67,7 @@ class FrrSync:
         self.rendered: dict[str, Rendered] = {}  # renderer key -> last applied
         self.dirty = True  # FRR state unknown: force a reload
         self.bgp_state = state.BgpState(frr)
+        self.daemon_state = state.FrrDaemonState(frr)
 
     # -- native (mgmtd) --------------------------------------------------------------
 
@@ -192,9 +193,11 @@ class FrrSync:
                 log(f"transaction aborted ({module}), resynchronising")
                 self.resync(running)
 
-    def on_bgp_state(self, xpath: str) -> dict[str, Any] | None:
+    def on_state(self, xpath: str) -> dict[str, Any] | None:
+        """tarvos-bgp and tarvos-frr state (rendered models, read from vtysh)."""
+        provider = self.bgp_state if xpath.startswith(state.BGP_STATE) else self.daemon_state
         try:
-            return self.bgp_state.get(xpath)
+            return provider.get(xpath)
         except Exception as exc:  # callbacks must not raise into the C stack
             log(f"ERROR: reading {xpath}: {exc}")
             return None
@@ -282,12 +285,14 @@ def main() -> int:
                 )
             except SysrepoError as exc:
                 log(f"WARNING: no operational data for {xpath} ({exc})")
-        for xpath in state.BGP_OPER_XPATHS:
+        rendered_state = [(state.BGP, x) for x in state.BGP_OPER_XPATHS]
+        rendered_state += [(state.FRR, x) for x in state.FRR_OPER_XPATHS]
+        for module, xpath in rendered_state:
             try:
                 session.subscribe_oper_data_request(
-                    state.BGP,
+                    module,
                     xpath,
-                    lambda _req_xpath, sub_xpath: sync.on_bgp_state(sub_xpath),
+                    lambda _req_xpath, sub_xpath: sync.on_state(sub_xpath),
                     private_data=xpath,
                 )
             except SysrepoError as exc:
