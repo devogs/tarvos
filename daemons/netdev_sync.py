@@ -9,6 +9,9 @@ already used by another device is refused instead of being taken over.
 Reconciliation runs in the Sysrepo change event (errors refuse the edit) and again every
 RECONCILE_INTERVAL seconds, so ports that appear later (containerlab attaches links
 after the container started) are picked up.
+
+The state of each configured VRF and VNI (device status, members, remote VTEPs) is
+served as operational data, read from the kernel on every request.
 """
 
 from __future__ import annotations
@@ -261,11 +264,111 @@ def kernel_state() -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
     return links, addresses
 
 
+def fdb_state() -> list[dict[str, Any]]:
+    result = subprocess.run(
+        ["bridge", "-j", "fdb", "show"], capture_output=True, text=True, timeout=10, check=False
+    )
+    if result.returncode != 0:
+        raise NetdevError(f"bridge fdb show: {result.stderr.strip()}")
+    return json.loads(result.stdout or "[]")
+
+
 def execute(commands: list[list[str]]) -> None:
     for command in commands:
         result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
         if result.returncode != 0:
             raise NetdevError(f"{' '.join(command)}: {result.stderr.strip() or 'failed'}")
+
+
+# -- operational state -----------------------------------------------------------------
+
+ZERO_MAC = "00:00:00:00:00:00"
+
+
+def _oper_status(link: dict[str, Any] | None) -> str:
+    if link is None:
+        return "not-present"
+    flags = set(link.get("flags") or [])
+    return "up" if {"UP", "LOWER_UP"} <= flags else "down"
+
+
+def _members(links: list[dict[str, Any]], master: str) -> list[str]:
+    return sorted(link["ifname"] for link in links if link.get("master") == master)
+
+
+def vrf_state(vrfs: dict[str, Any], links: list[dict[str, Any]]) -> dict[str, Any]:
+    """Running tarvos-vrf data + ``ip -j -d link show`` -> /vrfs/vrf/state."""
+    by_name = {link["ifname"]: link for link in links}
+    entries = []
+    for vrf in (vrfs.get("vrfs") or {}).get("vrf") or []:
+        link = by_name.get(vrf["name"])
+        if link is not None and _kind(link) != "vrf":
+            link = None
+        state: dict[str, Any] = {"oper-status": _oper_status(link)}
+        if link is not None:
+            table = _info(link).get("table")
+            if isinstance(table, int):
+                state["table"] = table
+            members = _members(links, vrf["name"])
+            if members:
+                state["member"] = members
+        entries.append({"name": vrf["name"], "state": state})
+    return {"vrfs": {"vrf": entries}} if entries else {}
+
+
+def _vni_state(
+    vni: int, by_name: dict[str, dict[str, Any]], links: list[dict[str, Any]],
+    fdb: list[dict[str, Any]],
+) -> dict[str, Any]:  # fmt: skip
+    vxlan_name, bridge_name = f"vx{vni}", f"br{vni}"
+    vxlan = by_name.get(vxlan_name)
+    if vxlan is not None and _kind(vxlan) != "vxlan":
+        vxlan = None
+    state: dict[str, Any] = {"oper-status": _oper_status(vxlan)}
+    if vxlan is None:
+        return state
+    state["vxlan-interface"] = vxlan_name
+    if vxlan.get("master") == bridge_name:
+        state["bridge"] = bridge_name
+    local = _info(vxlan).get("local")
+    if local:
+        state["local-vtep"] = local
+    vteps: list[str] = []
+    macs: set[str] = set()
+    for entry in fdb:
+        if entry.get("ifname") != vxlan_name or not entry.get("dst"):
+            continue
+        # Every FDB entry with a destination points at a remote VTEP: the all-zero MAC
+        # is the L2VNI flood entry (type-3), the others are remote MACs (type-2) or,
+        # on an L3VNI, router MACs.
+        if entry["dst"] not in vteps:
+            vteps.append(entry["dst"])
+        if entry.get("mac") != ZERO_MAC:
+            macs.add(str(entry.get("mac")))
+    if vteps:
+        state["remote-vtep"] = sorted(vteps, key=ipaddress.ip_address)
+    state["remote-mac-count"] = len(macs)
+    members = _members(links, bridge_name)
+    if members:
+        state["member"] = members
+    return state
+
+
+def vxlan_state(
+    vxlan: dict[str, Any], links: list[dict[str, Any]], fdb: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Running tarvos-vxlan data + links + ``bridge -j fdb show`` -> l2vni/l3vni state."""
+    by_name = {link["ifname"]: link for link in links}
+    config = vxlan.get("vxlan") or {}
+    out: dict[str, Any] = {}
+    for kind in ("l2vni", "l3vni"):
+        entries = [
+            {"vni": entry["vni"], "state": _vni_state(int(entry["vni"]), by_name, links, fdb)}
+            for entry in config.get(kind) or []
+        ]
+        if entries:
+            out[kind] = entries
+    return {"vxlan": out} if out else {}
 
 
 XPATHS = {"tarvos-vrf": "/tarvos-vrf:vrfs", "tarvos-vxlan": "/tarvos-vxlan:vxlan"}
@@ -310,6 +413,29 @@ class Agent:
             if changes:
                 log(f"applied {len(changes)} kernel change(s)")
 
+    def on_vrf_state(self, _xpath: str, _private_data: Any) -> dict[str, Any] | None:
+        try:
+            return vrf_state(self.data.get("tarvos-vrf") or {}, _ip_json("-d", "link", "show"))
+        except Exception as exc:  # callbacks must not raise into the C stack
+            log(f"ERROR: reading VRF state: {exc}")
+            return None
+
+    def on_vxlan_state(self, _xpath: str, _private_data: Any) -> dict[str, Any] | None:
+        try:
+            return vxlan_state(
+                self.data.get("tarvos-vxlan") or {}, _ip_json("-d", "link", "show"), fdb_state()
+            )
+        except Exception as exc:
+            log(f"ERROR: reading VXLAN state: {exc}")
+            return None
+
+
+OPER_XPATHS = (
+    ("tarvos-vrf", "/tarvos-vrf:vrfs/vrf/state", "on_vrf_state"),
+    ("tarvos-vxlan", "/tarvos-vxlan:vxlan/l2vni/state", "on_vxlan_state"),
+    ("tarvos-vxlan", "/tarvos-vxlan:vxlan/l3vni/state", "on_vxlan_state"),
+)
+
 
 def main() -> int:
     from sysrepo import SysrepoCallbackFailedError, SysrepoConnection, SysrepoError
@@ -348,6 +474,11 @@ def main() -> int:
                 )
             except SysrepoError as exc:
                 log(f"WARNING: {module} is not available ({exc})")
+        for module, xpath, method in OPER_XPATHS:
+            try:
+                session.subscribe_oper_data_request(module, xpath, getattr(agent, method))
+            except SysrepoError as exc:
+                log(f"WARNING: no operational data for {xpath} ({exc})")
         log("serving tarvos-vrf, tarvos-vxlan")
         while not stop.wait(RECONCILE_INTERVAL):
             try:

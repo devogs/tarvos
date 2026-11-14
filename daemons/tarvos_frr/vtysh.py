@@ -109,3 +109,13 @@ def reload(text: str) -> None:
         os.unlink(path)
     if result.returncode != 0:
         raise FrrError(_clean(result.stdout + result.stderr) or "frr-reload failed")
+
+
+def show_json(*commands: str) -> list[Any]:
+    """Run several ``show ... json`` commands in one vtysh call; one document each."""
+    from tarvos_frr.state import decode_many
+
+    documents = decode_many(vtysh(*commands))
+    if len(documents) != len(commands):
+        raise FrrError(f"expected {len(commands)} JSON documents, got {len(documents)}")
+    return documents

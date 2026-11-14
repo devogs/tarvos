@@ -106,6 +106,34 @@ One `<edit-config>` (excerpt, see [tests/integration/netconf_evpn.py](tests/inte
 
 `FRR_DAEMONS=bgpd` is enough for this leaf; add `bfdd`, `ospfd`, ... for the corresponding models.
 
+## Operational state over NETCONF
+
+`<get>` (or `<get-data>` on the operational datastore) returns live state next to the configuration, so a controller can verify a fabric without `vtysh`. State is read from FRR (`show ... json`) and the kernel on every request; a filtered `<get>` only runs the commands its subtree needs.
+
+| Node (read-only) | Content | Source |
+|---|---|---|
+| `/tarvos-bgp:bgp/state/instance[vrf]` | AS, router ID, L3VNI and router MAC, neighbour counts; per neighbour: session state, uptime, TCP endpoints, negotiated timers, message counters, last reset reason, prefixes received/sent per address family | `show bgp vrfs json`, `show bgp vrf all neighbors json` |
+| `/tarvos-bgp:bgp/state/evpn/vni[vni]` | L2/L3 type, VXLAN device, bridge, tenant VRF, local and remote VTEPs, MAC and ARP/ND counts; L3VNI status, router MAC and L2VNIs | `show evpn vni detail json` (zebra; also without bgpd) |
+| `/tarvos-bgp:bgp/state/evpn/route-count[route-type]` | Number of EVPN routes of each type 1-5 | `show bgp l2vpn evpn json` |
+| `/tarvos-bgp:bgp/state/evpn/route[route-distinguisher prefix]` | Every EVPN route: type, MAC, IP, prefix length, path count; best path source/peer, next hops, route targets, router MAC, AS path | `show bgp l2vpn evpn json` |
+| `/tarvos-vrf:vrfs/vrf[name]/state` | Device status (`up`, `down`, `not-present`), routing table, enslaved interfaces | `ip -j -d link` |
+| `/tarvos-vxlan:vxlan/l2vni[vni]/state`, `l3vni[vni]/state` | VXLAN device status, bridge, local VTEP, remote VTEPs and remote MAC count from the VXLAN FDB, bridge ports | `ip -j -d link`, `bridge -j fdb` |
+| `/tarvos-lldp:lldp/neighbors` | LLDP neighbours (see below) | lldpd |
+| `frr-interface`, `frr-vrf`, `frr-zebra`, RIB, RIP | FRR's own state | mgmtd |
+
+Example: the EVPN view of a leaf.
+
+```xml
+<get><filter type="subtree">
+  <bgp xmlns="urn:tarvos:params:xml:ns:yang:tarvos-bgp"><state>
+    <instance><vrf>default</vrf><neighbor/></instance>
+    <evpn><vni/><route-count/></evpn>
+  </state></bgp>
+</filter></get>
+```
+
+`tests/integration/netconf_state.py` is a small controller-side check that verifies sessions, VNIs and type-2/type-3/type-5 routes from these trees only.
+
 ## LLDP over NETCONF
 
 The `tarvos-lldp` module configures lldpd at runtime and reports discovered neighbours. The `LLDP_*` variables are the boot defaults: a leaf you configure overrides its variable, and removing it restores the variable's value.
@@ -138,7 +166,7 @@ Settings are only applied when the container runs with `LLDP_ENABLED=yes`. Per-i
 
 - Remote syslog forwarding is unit-tested but not yet tested against a real collector; `sysrepo-plugind` and `netopeer2-server` log to stdout only.
 - Netopeer2 advertises the `yang-library` capability and serves modules via `<get-schema>`; it does not list every module in its `<hello>`.
-- Operational state is served for the mgmtd modules (interfaces, VRFs, RIBs, RIP). BGP/OSPF/IS-IS session state is not modelled yet: use `vtysh` (`show bgp summary`, `show bgp l2vpn evpn`).
+- OSPF and IS-IS adjacency state is not modelled yet: use `vtysh` (`show ip ospf neighbor`, `show isis neighbor`).
 - The vtysh-rendered FRR models support the common nodes; anything Tarvos cannot render yet (for example cisco-style access lists, BFD authentication, some route-map actions) is refused with an explicit error, never silently dropped.
 - gNMI is not available yet.
 - Image is `linux/amd64` only.

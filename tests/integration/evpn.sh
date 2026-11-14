@@ -5,7 +5,8 @@
 #
 # Proves: iBGP underlay + EVPN session, type-3 (IMET), type-2 (MAC/IP, L2 stretch of
 # VNI 100 between h1 and h2), type-5 (IP prefix of VRF RED) with symmetric IRB over
-# L3VNI 5000, and clean removal of everything over NETCONF.
+# L3VNI 5000, all verified from NETCONF operational data (tests/integration/
+# netconf_state.py), and clean removal of everything over NETCONF.
 # Usage: tests/integration/evpn.sh <image>
 set -euo pipefail
 
@@ -99,28 +100,26 @@ docker exec "leaf1-${ID}" ip -d link show vx100 | grep -q 'vxlan id 100 local 10
 wait_for 20 "leaf1: eth2 not attached to br100" \
     sh -c "docker exec leaf1-${ID} ip link show eth2 | grep -q 'master br100'"
 
-echo "== BGP session (underlay + EVPN)"
-wait_for 60 "BGP session leaf1-leaf2 not established" \
-    sh -c "docker exec leaf1-${ID} vtysh -c 'show bgp neighbors 172.30.0.12 json' | grep -q '\"bgpState\":\"Established\"'"
-wait_for 30 "leaf2 loopback not learned by leaf1" \
-    sh -c "docker exec leaf1-${ID} vtysh -c 'show ip route 10.255.0.2/32' | grep -q 'bgp'"
+echo "== BGP session and EVPN type-2/type-3/type-5, from NETCONF <get> only (no vtysh)"
+# leaf1's view: session to leaf2 established, VNI 100 with leaf2's VTEP (type-3), the
+# type-2 routes of the hosts and the type-5 routes of VRF RED.
+nc_state() {
+    python3 "${HERE}/netconf_state.py" 127.0.0.1 "$(port 1)" admin admin 172.30.0.12 10.255.0.2
+}
+BGP_NS="urn:tarvos:params:xml:ns:yang:tarvos-bgp"
+wait_for 90 "BGP session leaf1-leaf2 not established (NETCONF state)" \
+    sh -c "python3 '${HERE}/netconf_get.py' 127.0.0.1 $(port 1) '<bgp xmlns=\"${BGP_NS}\"><state><instance/></state></bgp>' | grep -q '<session-state>established</session-state>'"
 
-echo "== EVPN type-3 (remote VTEP of VNI 100)"
-wait_for 30 "leaf1 has no remote VTEP for VNI 100" \
-    sh -c "docker exec leaf1-${ID} vtysh -c 'show evpn vni 100' | grep -q '10.255.0.2'"
-
-echo "== L2 over VXLAN: h1 -> h2 (10.1.100.12), then EVPN type-2 for h2"
+echo "== L2 over VXLAN: h1 -> h2 (10.1.100.12), then EVPN type-2 for h2 (NETCONF)"
 wait_for 30 "h1 cannot ping h2 across VNI 100" docker exec "h1-${ID}" ping -c1 -W1 10.1.100.12
 h2_mac="$(docker exec "h2-${ID}" cat /sys/class/net/eth0/address)"
-wait_for 30 "leaf1 has no type-2 route for h2 (${h2_mac})" \
-    sh -c "docker exec leaf1-${ID} vtysh -c 'show bgp l2vpn evpn route type macip' | grep -qi '${h2_mac}'"
+wait_for 30 "leaf1 has no type-2 route for h2 (${h2_mac}) in NETCONF state" \
+    sh -c "python3 '${HERE}/netconf_get.py' 127.0.0.1 $(port 1) '<bgp xmlns=\"${BGP_NS}\"><state><evpn><route/></evpn></state></bgp>' | grep -qi '<mac>${h2_mac}</mac>'"
 
-echo "== EVPN type-5: leaf2's 10.10.2.0/24 in VRF RED on leaf1, routed over L3VNI 5000"
-wait_for 30 "leaf1 has no type-5 route for 10.10.2.0/24" \
-    sh -c "docker exec leaf1-${ID} vtysh -c 'show bgp l2vpn evpn route type prefix' | grep -q '10.10.2.0'"
-wait_for 30 "10.10.2.0/24 not in leaf1 VRF RED" \
-    sh -c "docker exec leaf1-${ID} vtysh -c 'show ip route vrf RED 10.10.2.0/24' | grep -q 'bgp'"
+echo "== symmetric IRB over L3VNI 5000: h1 -> leaf2's 10.10.2.1 (VRF RED)"
 wait_for 30 "h1 cannot reach 10.10.2.1 (symmetric IRB)" docker exec "h1-${ID}" ping -c1 -W1 10.10.2.1
+for _ in $(seq 1 30); do nc_state 2>/dev/null && break; sleep 1; done
+nc_state || fail "leaf1 NETCONF state check failed"
 
 echo "== NETCONF operational data from mgmtd (frr-vrf state)"
 python3 - "$(port 1)" <<'EOF' || fail "no frr-vrf operational data over NETCONF"

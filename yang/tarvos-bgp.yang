@@ -6,6 +6,9 @@ module tarvos-bgp {
   import ietf-inet-types {
     prefix inet;
   }
+  import ietf-yang-types {
+    prefix yang;
+  }
   import tarvos-types {
     prefix ttypes;
   }
@@ -31,8 +34,17 @@ module tarvos-bgp {
      tarvos-vrf and tarvos-vxlan; the L3VNI of a VRF with FRR's native
      frr-vrf/frr-zebra 'l3vni-id'.
 
+     Operational state (/bgp/state) is read from bgpd and zebra on every
+     request ('show bgp vrfs', 'show bgp vrf all neighbors', 'show evpn vni
+     detail', 'show bgp l2vpn evpn'). It is empty when bgpd is not running.
+
      Copyright 2026 Tarvos contributors. Licensed under the Apache License 2.0.";
 
+  revision 2026-11-14 {
+    description
+      "Operational state: neighbours per instance, EVPN VNIs, EVPN route
+       counts and routes.";
+  }
   revision 2026-11-13 {
     description
       "Initial revision.";
@@ -353,6 +365,434 @@ module tarvos-bgp {
     }
   }
 
+  typedef session-state {
+    type enumeration {
+      enum idle;
+      enum connect;
+      enum active;
+      enum opensent;
+      enum openconfirm;
+      enum established;
+      enum clearing {
+        description
+          "FRR-specific: the session is being torn down.";
+      }
+      enum deleted {
+        description
+          "FRR-specific: the neighbour is being removed.";
+      }
+    }
+    description
+      "BGP finite state machine state (RFC 4271 section 8.2.2).";
+  }
+
+  typedef evpn-route-type {
+    type uint8 {
+      range "1..5";
+    }
+    description
+      "EVPN route type: 1 Ethernet auto-discovery, 2 MAC/IP advertisement,
+       3 inclusive multicast Ethernet tag, 4 Ethernet segment, 5 IP prefix.";
+  }
+
+  grouping instance-state {
+    description
+      "State of a BGP instance.";
+
+    leaf vrf {
+      type ttypes:vrf-name;
+      description
+        "VRF of the instance.";
+    }
+    leaf asn {
+      type ttypes:as-number;
+      description
+        "Local AS.";
+    }
+    leaf router-id {
+      type inet:ipv4-address-no-zone;
+      description
+        "Router ID in use.";
+    }
+    leaf l3vni {
+      type ttypes:vni;
+      description
+        "L3VNI of the VRF instance, when one is bound.";
+    }
+    leaf router-mac {
+      type yang:mac-address;
+      description
+        "Router MAC advertised with type-5 routes (VRF instance with an
+         L3VNI).";
+    }
+    leaf configured-neighbors {
+      type uint32;
+      description
+        "Number of configured neighbours.";
+    }
+    leaf established-neighbors {
+      type uint32;
+      description
+        "Number of neighbours in the established state.";
+    }
+
+    list neighbor {
+      key "address";
+      description
+        "BGP neighbours of the instance.";
+
+      leaf address {
+        type union {
+          type inet:ip-address-no-zone;
+          type ttypes:interface-name;
+        }
+        description
+          "Peer address, or interface for BGP unnumbered.";
+      }
+      leaf description {
+        type string;
+        description
+          "Configured description.";
+      }
+      leaf hostname {
+        type string;
+        description
+          "Hostname advertised by the peer (hostname capability).";
+      }
+      leaf remote-as {
+        type ttypes:as-number;
+        description
+          "Peer AS.";
+      }
+      leaf local-as {
+        type ttypes:as-number;
+        description
+          "Local AS of the session.";
+      }
+      leaf type {
+        type enumeration {
+          enum internal;
+          enum external;
+        }
+        description
+          "iBGP or eBGP.";
+      }
+      leaf remote-router-id {
+        type inet:ipv4-address-no-zone;
+        description
+          "Router ID of the peer (once the session reached OpenConfirm).";
+      }
+      leaf session-state {
+        type session-state;
+        description
+          "BGP FSM state.";
+      }
+      leaf uptime {
+        type uint64;
+        units "seconds";
+        description
+          "Time since the session was established; only present while it
+           is established.";
+      }
+      leaf local-address {
+        type inet:ip-address-no-zone;
+        description
+          "Local address of the TCP session.";
+      }
+      leaf local-port {
+        type inet:port-number;
+        description
+          "Local port of the TCP session.";
+      }
+      leaf remote-port {
+        type inet:port-number;
+        description
+          "Remote port of the TCP session.";
+      }
+      leaf hold-time {
+        type uint16;
+        units "seconds";
+        description
+          "Negotiated hold time.";
+      }
+      leaf keepalive {
+        type uint16;
+        units "seconds";
+        description
+          "Negotiated keepalive interval.";
+      }
+      leaf connections-established {
+        type yang:counter32;
+        description
+          "Number of times the session was established.";
+      }
+      leaf connections-dropped {
+        type yang:counter32;
+        description
+          "Number of times an established session went down.";
+      }
+      leaf last-reset-reason {
+        type string;
+        description
+          "Reason of the last session reset, as reported by bgpd.";
+      }
+
+      container messages {
+        description
+          "Message counters.";
+        leaf received {
+          type yang:counter64;
+          description
+            "Total messages received.";
+        }
+        leaf sent {
+          type yang:counter64;
+          description
+            "Total messages sent.";
+        }
+        leaf updates-received {
+          type yang:counter64;
+          description
+            "UPDATE messages received.";
+        }
+        leaf updates-sent {
+          type yang:counter64;
+          description
+            "UPDATE messages sent.";
+        }
+        leaf notifications-received {
+          type yang:counter64;
+          description
+            "NOTIFICATION messages received.";
+        }
+        leaf notifications-sent {
+          type yang:counter64;
+          description
+            "NOTIFICATION messages sent.";
+        }
+      }
+
+      list address-family {
+        key "name";
+        description
+          "Address families negotiated or activated with the neighbour.";
+        leaf name {
+          type afi-safi;
+          description
+            "Address family.";
+        }
+        leaf prefixes-received {
+          type yang:gauge32;
+          description
+            "Prefixes accepted from the neighbour (after inbound policy).";
+        }
+        leaf prefixes-sent {
+          type yang:gauge32;
+          description
+            "Prefixes advertised to the neighbour.";
+        }
+      }
+    }
+  }
+
+  grouping evpn-state {
+    description
+      "EVPN state of the node (zebra VNIs and the bgpd L2VPN EVPN table).";
+
+    list vni {
+      key "vni";
+      description
+        "VNIs known to zebra.";
+      leaf vni {
+        type ttypes:vni;
+        description
+          "VNI.";
+      }
+      leaf type {
+        type enumeration {
+          enum l2 {
+            description
+              "Layer 2 VNI (bridged segment).";
+          }
+          enum l3 {
+            description
+              "Layer 3 VNI (routed VRF segment).";
+          }
+        }
+        description
+          "VNI type.";
+      }
+      leaf vxlan-interface {
+        type ttypes:interface-name;
+        description
+          "VXLAN device of the VNI.";
+      }
+      leaf bridge {
+        type ttypes:interface-name;
+        description
+          "Bridge (SVI) of the VNI.";
+      }
+      leaf tenant-vrf {
+        type ttypes:vrf-name;
+        description
+          "VRF of the VNI.";
+      }
+      leaf local-vtep {
+        type inet:ipv4-address-no-zone;
+        description
+          "Local VTEP address.";
+      }
+      leaf-list remote-vtep {
+        type inet:ipv4-address-no-zone;
+        description
+          "Remote VTEPs of an L2VNI (learned from type-3 routes).";
+      }
+      leaf mac-count {
+        type yang:gauge32;
+        description
+          "MAC addresses in the VNI (local and remote).";
+      }
+      leaf arp-nd-count {
+        type yang:gauge32;
+        description
+          "ARP/ND entries in the VNI (local and remote).";
+      }
+      leaf oper-status {
+        type enumeration {
+          enum up;
+          enum down;
+        }
+        description
+          "State of an L3VNI.";
+      }
+      leaf router-mac {
+        type yang:mac-address;
+        description
+          "Router MAC of an L3VNI.";
+      }
+      leaf-list l2vni {
+        type ttypes:vni;
+        description
+          "L2VNIs routed by an L3VNI.";
+      }
+    }
+
+    list route-count {
+      key "route-type";
+      description
+        "Number of routes per EVPN route type in the L2VPN EVPN table (all
+         route distinguishers, local and received). Every type is listed,
+         with a zero count when there are no routes.";
+      leaf route-type {
+        type evpn-route-type;
+        description
+          "Route type.";
+      }
+      leaf count {
+        type yang:gauge32;
+        description
+          "Number of routes (distinct route distinguisher and prefix).";
+      }
+    }
+
+    list route {
+      key "route-distinguisher prefix";
+      description
+        "Routes of the L2VPN EVPN table.";
+      leaf route-distinguisher {
+        type ttypes:route-distinguisher;
+        description
+          "Route distinguisher.";
+      }
+      leaf prefix {
+        type string;
+        description
+          "EVPN prefix in FRR notation, for example
+           '[2]:[0]:[48]:[aa:bb:cc:dd:ee:ff]' or '[5]:[0]:[24]:[10.1.0.0]'.";
+      }
+      leaf route-type {
+        type evpn-route-type;
+        description
+          "Route type.";
+      }
+      leaf ethernet-tag {
+        type uint32;
+        description
+          "Ethernet tag ID.";
+      }
+      leaf mac {
+        type yang:mac-address;
+        description
+          "MAC address (type 2).";
+      }
+      leaf ip-address {
+        type inet:ip-address-no-zone;
+        description
+          "IP address (type 2 with IP, type 3 originator, type 5 prefix).";
+      }
+      leaf ip-prefix-length {
+        type uint8 {
+          range "0..128";
+        }
+        description
+          "Prefix length (type 5).";
+      }
+      leaf path-count {
+        type uint32;
+        description
+          "Number of paths.";
+      }
+
+      container best-path {
+        description
+          "Best path.";
+        leaf source {
+          type enumeration {
+            enum local {
+              description
+                "Originated by this node.";
+            }
+            enum internal {
+              description
+                "Received from an iBGP neighbour.";
+            }
+            enum external {
+              description
+                "Received from an eBGP neighbour.";
+            }
+          }
+          description
+            "Origin of the path.";
+        }
+        leaf peer {
+          type inet:ip-address-no-zone;
+          description
+            "Neighbour the path was received from.";
+        }
+        leaf-list next-hop {
+          type inet:ip-address-no-zone;
+          description
+            "Next hops (remote VTEP).";
+        }
+        leaf-list route-target {
+          type ttypes:route-target;
+          description
+            "Route targets.";
+        }
+        leaf router-mac {
+          type yang:mac-address;
+          description
+            "Router MAC extended community (type 2 with IP, type 5).";
+        }
+        leaf as-path {
+          type string;
+          description
+            "AS path.";
+        }
+      }
+    }
+  }
+
   container bgp {
     description
       "FRR bgpd.";
@@ -627,6 +1067,25 @@ module tarvos-bgp {
               "Advertise this VNI's SVI IP address.";
           }
         }
+      }
+    }
+
+    container state {
+      config false;
+      description
+        "Operational state, read from FRR on request.";
+
+      list instance {
+        key "vrf";
+        description
+          "Running BGP instances.";
+        uses instance-state;
+      }
+
+      container evpn {
+        description
+          "BGP EVPN state.";
+        uses evpn-state;
       }
     }
   }
