@@ -118,6 +118,11 @@ RUN python3 -m venv /opt/venv \
         "pyroute2==${PYROUTE2_VERSION}" \
     && /opt/venv/bin/pip uninstall -y pip setuptools
 
+# vrfexec's LD_PRELOAD library (binds the sockets of a command to a VRF, see the source).
+COPY docker/vrfexec/libtarvos-vrf.c /src/vrfexec/
+RUN gcc -O2 -Wall -Wextra -Werror -fPIC -shared \
+        -o /src/vrfexec/libtarvos-vrf.so /src/vrfexec/libtarvos-vrf.c -ldl
+
 # ---------------------------------------------------------------------------
 # Telemetry agent: eBPF programs (C, GPL) compiled with clang; Go agent with the
 # Prometheus exporter and gNMI server (linked against libpam).
@@ -168,26 +173,50 @@ RUN apt-get update \
         nftables iproute2 python3 \
         libpcre2-8-0 libssl3t64 libssh-4 libpam0g libcurl4t64 \
         procps ca-certificates \
+        iputils-ping iputils-tracepath iputils-arping traceroute mtr-tiny \
+        bind9-dnsutils bind9-host tcpdump ethtool netcat-openbsd curl iperf3 conntrack \
+        libcap2-bin bash-completion less \
     && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
 
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /var/lib/sysrepo /var/lib/sysrepo
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=telemetry /out/tarvos-telemetry /usr/local/bin/tarvos-telemetry
+COPY --from=builder /src/vrfexec/libtarvos-vrf.so /tmp/libtarvos-vrf.so
 
 # Local fallback account (password set at boot from ADMIN_PASSWORD, default "admin")
 # and the shared account that TACACS+-authenticated users are mapped to.
+# "pcap": accounts allowed to capture packets with tcpdump (admin and TACACS+ users).
 RUN ldconfig \
     && groupadd -g 1001 tacacs \
-    && useradd -m -s /bin/bash -G frrvty,frr admin \
-    && useradd -m -u 1001 -g tacacs -G frrvty,frr -s /bin/bash tacacs \
+    && groupadd -r pcap \
+    && useradd -m -s /bin/bash -G frrvty,frr,pcap admin \
+    && useradd -m -u 1001 -g tacacs -G frrvty,frr,pcap -s /bin/bash tacacs \
     && mkdir -p /opt/tarvos/yangs /opt/tarvos/yangs-builtin /opt/tarvos/daemons /opt/tarvos/scripts /run/sshd /var/lib/tarvos
+
+# Troubleshooting toolbox for unprivileged operators (admin and TACACS+ users):
+# * ping: CAP_NET_RAW in its permitted set (iputils raises it only to open the raw
+#   socket), so it works whatever net.ipv4.ping_group_range the host sets;
+# * tcpdump: capture capabilities, executable by the pcap group only (chgrp/chmod before
+#   setcap: both clear file capabilities);
+# * libtarvos-vrf.so in the system library directory with the set-user-ID bit, the only
+#   way glibc preloads it into the capability-carrying tools (see its source);
+# * route protocol 250 is "tarvos" (VRF isolation routes of netdev_sync).
+RUN install -m 4644 /tmp/libtarvos-vrf.so "/usr/lib/$(uname -m)-linux-gnu/libtarvos-vrf.so" \
+    && rm /tmp/libtarvos-vrf.so \
+    && setcap cap_net_raw+p /usr/bin/ping \
+    && chgrp pcap /usr/bin/tcpdump && chmod 0750 /usr/bin/tcpdump \
+    && setcap cap_net_raw,cap_net_admin+ep /usr/bin/tcpdump \
+    && mkdir -p /etc/iproute2/rt_protos.d \
+    && echo '250 tarvos' >/etc/iproute2/rt_protos.d/tarvos.conf
 
 # Shipped modules live outside the YANG_DIR volume: GNS3 mounts an empty directory over it.
 COPY yang/ /opt/tarvos/yangs-builtin/
 COPY scripts/ /opt/tarvos/scripts/
 COPY daemons/ /opt/tarvos/daemons/
-RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py /opt/tarvos/daemons/*.py
+RUN chmod 0755 /opt/tarvos/scripts/*.sh /opt/tarvos/scripts/*.py /opt/tarvos/daemons/*.py \
+    && ln -s /opt/tarvos/scripts/vrfexec.sh /usr/local/bin/vrfexec \
+    && echo '. /opt/tarvos/scripts/vrfexec_completion.sh' >>/etc/bash.bashrc
 
 EXPOSE 22 830 9273 57400
 VOLUME ["/opt/tarvos/yangs"]

@@ -24,6 +24,7 @@ Debian trixie-slim + FRRouting 10.7.1 (official packages, mgmtd) + Sysrepo/Netop
 - **AAA:** TACACS+ with ordered failover and a local break-glass `admin`.
 - **Discovery:** LLDP (lldpd) advertises the node. Manage it and read discovered neighbours over NETCONF with the `tarvos-lldp` module, or use `lldpcli show neighbors`.
 - **Isolated management plane:** `eth0` lives in VRF `mgmt` by default.
+- **Troubleshooting toolbox:** `ping`, `traceroute`, `mtr`, `tracepath`, `dig`, `tcpdump`, `curl`, `nc`, `iperf3` and more, usable in any VRF with `vrfexec <vrf> <command>`, as root or as an SSH user.
 - **Observability:** operational state over NETCONF for every model (BGP sessions, EVPN VNIs and routes, VRF/VXLAN devices, PIM/LDP/VRRP/BFD sessions, tc and CoPP counters, TACACS+ reachability), rsyslog to stdout with optional forwarding to remote collectors.
 - **eBPF telemetry:** per-interface traffic, packet sizes and drops by reason, per-VNI VXLAN counters and control-plane packet counters, collected in the kernel and exported to Prometheus (`/metrics`, port 9273).
 - **QoS and CoPP over NETCONF:** tc shaping and DSCP classes (`tarvos-qos`), nftables control-plane policing (`tarvos-nftables`).
@@ -226,6 +227,63 @@ The `tarvos-lldp` module configures lldpd at runtime and reports discovered neig
 | `/lldp/neighbors/neighbor` (read-only) | Chassis/port ID, system name and description, management addresses, capabilities, TTL, per local interface |
 
 Settings are only applied when the container runs with `LLDP_ENABLED=yes`. Per-interface status for an interface that does not exist yet is accepted but only takes effect once the interface is present and the configuration is re-applied.
+
+## Troubleshooting
+
+The image carries the usual toolbox: `ping`, `tracepath`, `arping`, `traceroute`, `mtr`, `dig`/`nslookup`/`host`, `tcpdump`, `ethtool`, `nc` (OpenBSD), `curl`, `iperf3` and `conntrack`. They work from `docker exec` (root) and from an SSH session as `admin` or a TACACS+ user, with the capabilities the container already has (`NET_RAW`, `NET_ADMIN`). `tcpdump` is restricted to the `pcap` group, which `admin` and the TACACS+ account belong to.
+
+### Pick the VRF: `vrfexec`
+
+```bash
+vrfexec                                  # list the VRFs: default, mgmt and every tenant VRF
+vrfexec RED ping 10.1.100.12             # any command, its sockets bound to VRF RED
+vrfexec mgmt dig @192.0.2.53 example.com
+vrfexec RED                              # a shell where every command runs in RED
+```
+
+`vrfexec <vrf> <command>` works for any VRF, including a VRF created over NETCONF a minute ago, with no per-VRF setup, and completes VRF names with Tab. It binds every IPv4/IPv6 socket of the command to the VRF device (`SO_BINDTODEVICE`, through a small preload library), and fails the socket rather than letting it fall back to another VRF. `ip vrf exec` is not used: it needs root and a writable cgroup hierarchy, which a non-privileged container does not have.
+
+Some tools also have their own option:
+
+| Tool | Own VRF option | Notes |
+|---|---|---|
+| `ping` | `ping -I RED 10.1.100.12` | |
+| `traceroute` | `traceroute -i RED 10.10.2.1` | `-I` (ICMP) and `-T` (TCP) need root; `mtr` and `tracepath` work for everyone |
+| `curl` | `curl --interface RED http://10.10.2.1/` | |
+| `iperf3` | `iperf3 -c 10.10.2.1 --bind-dev RED` | |
+| `arping` | `arping -I eth2 10.1.100.12` | layer 2: name a member port, not the VRF |
+| `tcpdump` | `tcpdump -i eth2`, `-i vx100`, `-i br100`, `-i RED` | capture on the VRF device sees all its routed traffic |
+| `mtr`, `tracepath`, `dig`, `nslookup`, `host`, `nc` | none that selects a VRF | use `vrfexec` (`mtr --interface` does not work in a VRF) |
+
+**Name resolution.** `dig`, `nslookup` and `host` send their queries from the VRF, so `vrfexec RED dig @10.1.100.53 app.example` asks a resolver that only VRF RED can reach. Lookups made inside glibc (`curl https://name`, `ping name`) always use the node resolver of `/etc/resolv.conf`, reached through the management network: give those tools an address, or resolve with `dig` first.
+
+**Isolation.** Every tenant VRF table gets an `unreachable default` route at the highest metric (`proto tarvos`), so a lookup that misses in the tenant table stops there: tenant traffic never falls back to the main table or to the management VRF. The default VRF still falls back to the management table, by design (syslog, TACACS+).
+
+### Recipes
+
+```bash
+# Anycast gateway and a remote host of the L2VNI
+vrfexec RED ping -c3 10.1.100.1
+vrfexec RED ping -c3 10.1.100.12
+
+# Path across the fabric in a tenant VRF
+vrfexec RED traceroute -n 10.10.2.1
+vrfexec RED mtr -n -r -c 10 10.10.2.1
+
+# MTU across the VXLAN underlay: 1500 minus 50 bytes of VXLAN overhead = 1450,
+# so 1422 bytes of ICMP payload (+ 28 of headers) must pass with DF set
+vrfexec RED ping -M do -s 1422 -c3 10.10.2.1
+vrfexec RED tracepath -n 10.10.2.1
+
+# BGP and VXLAN on the underlay (the outer header and the VNI are decoded)
+tcpdump -ni eth1 'tcp port 179'
+tcpdump -ni eth1 'udp port 4789'
+tcpdump -ni vx100                       # inner frames of VNI 100
+
+# Management plane
+vrfexec mgmt nslookup example.com
+vrfexec mgmt curl -sI https://example.com
+```
 
 ## Security notes
 

@@ -72,6 +72,15 @@ else
     echo "WARNING: eth0 is not in VRF mgmt on this host" >&2
 fi
 
+echo "== troubleshooting tools over SSH as admin (unprivileged): ping, vrfexec in mgmt, tcpdump"
+gw="$(docker inspect -f '{{.NetworkSettings.Gateway}}' "${NAME}")"
+out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0.1 \
+    "ping -c1 -W2 127.0.0.1 >/dev/null && vrfexec mgmt ping -c1 -W2 ${gw} >/dev/null && vrfexec --list && tcpdump --version >/dev/null && echo tools-ok")" ||
+    fail "toolbox over SSH: ${out}"
+if ! grep -q 'tools-ok' <<<"${out}" || ! grep -qx 'mgmt' <<<"${out}"; then
+    fail "toolbox over SSH: ${out}"
+fi
+
 echo "== FRR health"
 docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting 10.7.1' || fail "not FRR 10.7.1"
 docker exec "${NAME}" pgrep -x mgmtd >/dev/null || fail "mgmtd not running"

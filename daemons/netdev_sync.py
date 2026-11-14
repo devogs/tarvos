@@ -12,6 +12,12 @@ after the container started) are picked up.
 
 The state of each configured VRF and VNI (device status, members, remote VTEPs) is
 served as operational data, read from the kernel on every request.
+
+Every Tarvos VRF table also gets an ``unreachable default`` route at the highest metric
+(protocol ``tarvos``, 250): without it, a lookup that misses in a tenant table falls
+through to the main table and to the management VRF fallback rule (mgmt_vrf.sh), so
+tenant traffic could leave through the management interface. Any real default route
+(EVPN type-5, static) has a lower metric and wins.
 """
 
 from __future__ import annotations
@@ -37,6 +43,9 @@ DEFAULT_PORT = 4789
 RECONCILE_INTERVAL = float(os.environ.get("NETDEV_RECONCILE_INTERVAL", "10"))
 IN_FLIGHT_TIMEOUT = 120.0
 KIND_ORDER = {"vxlan": 0, "bridge": 1, "vrf": 2}  # deletion order; creation is reversed
+# VRF isolation route: rt_protos number owned by Tarvos, metric as in the kernel VRF docs.
+ROUTE_PROTO = 250
+ISOLATION_METRIC = 4278198272
 
 
 class NetdevError(ValueError):
@@ -244,6 +253,50 @@ def plan(
     return commands, warnings
 
 
+def isolation_plan(
+    desired: Desired, routes: dict[int, list[dict[str, Any]]]
+) -> tuple[list[list[str]], list[list[str]]]:
+    """Commands keeping one Tarvos ``unreachable default`` in each Tarvos VRF table.
+
+    ``routes`` maps the address family (4, 6) to ``ip -j -<f> route show table all
+    type unreachable`` entries. Returns (IPv4 commands, IPv6 commands): IPv6 is best
+    effort, a container without IPv6 must not refuse VRF configuration.
+    """
+    tables = {d.table for d in desired.devices.values() if d.kind == "vrf"}
+    out: dict[int, list[list[str]]] = {4: [], 6: []}
+    for family in (4, 6):
+        have: set[int] = set()
+        for route in routes.get(family) or []:
+            if route.get("dst") != "default" or str(route.get("protocol")) not in (
+                str(ROUTE_PROTO), "tarvos"
+            ):
+                continue
+            table = route.get("table")
+            if not str(table).isdigit():
+                continue
+            have.add(int(table))
+        base = ["ip", f"-{family}", "route"]
+        spec = ["unreachable", "default", "metric", str(ISOLATION_METRIC)]
+        for table in sorted(tables - have):
+            out[family].append(
+                [*base, "replace", *spec, "table", str(table), "proto", str(ROUTE_PROTO)]
+            )
+        for table in sorted(have - tables):
+            out[family].append([*base, "del", *spec, "table", str(table)])
+    return out[4], out[6]
+
+
+def isolation_routes() -> dict[int, list[dict[str, Any]]]:
+    routes: dict[int, list[dict[str, Any]]] = {}
+    for family in (4, 6):
+        try:
+            routes[family] = _ip_json(f"-{family}", "route", "show", "table", "all",
+                                      "type", "unreachable")  # fmt: skip
+        except NetdevError:
+            routes[family] = []  # IPv6 disabled
+    return routes
+
+
 def _ip_json(*args: str) -> list[dict[str, Any]]:
     result = subprocess.run(
         ["ip", "-j", *args], capture_output=True, text=True, timeout=10, check=False
@@ -426,6 +479,15 @@ class Agent:
             commands, warnings = plan(desired, links, addresses)
             changes = [c for c in commands if c[-1] != "up" and c[:3] != ["bridge", "link", "set"]]
             execute(commands)
+            v4, v6 = isolation_plan(desired, isolation_routes())
+            execute(v4)
+            for command in v6:
+                try:
+                    execute([command])
+                except NetdevError as exc:
+                    if not quiet:
+                        log(f"WARNING: IPv6 VRF isolation route: {exc}")
+            changes += v4 + v6
             self.data = data
             if not quiet:
                 for warning in warnings:
