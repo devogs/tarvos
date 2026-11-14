@@ -441,6 +441,14 @@ What an operator can rely on (each point is a test of the campaigns):
 - The vtysh-rendered FRR models support the common nodes; anything Tarvos cannot render yet (for example cisco-style access lists, BFD authentication, some route-map actions) is refused with an explicit error, never silently dropped.
 - Image is `linux/amd64` only.
 
+### Known weaknesses of 2.1.1 (open in the chaos suite)
+
+- **Garbage traffic on a host port and on the management ports.** Hundreds of frames with random source MACs on a VXLAN access port, plus junk TCP connections to SSH and NETCONF, made `admin` SSH logins fail for a while and stopped traffic between the hosts for about 150 s. Suspected causes, not confirmed: sshd's limit on pending connections (`MaxStartups`), and no per-port MAC limit, so every fake MAC is learned and advertised as an EVPN type-2 route. Mitigations: CoPP rate limits on 22 and 830, and port security on the hosts' switch.
+- **Tarvos-owned BGP configuration changed with vtysh.** It is re-applied every `FRR_RECONCILE_INTERVAL` (30 s): a removed neighbour came back within seconds in a manual test, but in one chaos run the sessions did not recover within the 60 s deadline. Do not edit Tarvos-owned FRR blocks with vtysh; use NETCONF.
+- **Silent TCP clients on port 830** delay new NETCONF sessions until their SSH handshake times out (rate-limit 830 with CoPP).
+- **Slow recovery in the last chaos run.** After each fault the lab took 140 to 200 s to pass every check, against 50 to 85 s in earlier runs. The cause is not known yet.
+- The chaos suite was run in pieces (seeds 2111-2113, 3 to 5 kills per write fault), not twice in a row in full: run `tests/chaos/run.sh` (or the `chaos` workflow) for a complete report.
+
 ## Development
 
 `feature` -> PR to `qa` (lint, unit tests, build, Trivy, integration tests incl. TACACS+, the troubleshooting toolbox, a two-leaf BGP EVPN lab and the short day-2 campaign, baseline metrics) -> PR to `main` (same checks, then push to Docker Hub as `matt13290/tarvos` with tags `latest`, `vX.Y.Z` from `VERSION`, and the commit SHA). Bump `VERSION` for every merge to `main`.
