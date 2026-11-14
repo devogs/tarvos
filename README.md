@@ -24,7 +24,7 @@ Debian trixie-slim + FRRouting 10.7.1 (official packages, mgmtd) + Sysrepo/Netop
 - **Discovery:** LLDP (lldpd) advertises the node. Manage it and read discovered neighbours over NETCONF with the `tarvos-lldp` module, or use `lldpcli show neighbors`.
 - **Isolated management plane:** `eth0` lives in VRF `mgmt` by default.
 - **Observability:** operational state over NETCONF for every model (BGP sessions, EVPN VNIs and routes, VRF/VXLAN devices, PIM/LDP/VRRP/BFD sessions, tc and CoPP counters, TACACS+ reachability), rsyslog to stdout with optional forwarding to remote collectors.
-- **eBPF telemetry:** per-interface traffic, packet sizes and drops by reason, per-VNI VXLAN counters and control-plane packet counters, collected in the kernel.
+- **eBPF telemetry:** per-interface traffic, packet sizes and drops by reason, per-VNI VXLAN counters and control-plane packet counters, collected in the kernel and exported to Prometheus (`/metrics`, port 9273).
 - **QoS and CoPP over NETCONF:** tc shaping and DSCP classes (`tarvos-qos`), nftables control-plane policing (`tarvos-nftables`).
 - **Small and fast:** about 100 MB compressed, boots in under 10 s, about 115 MiB of RAM with bgpd and telemetry (FRR 10.7 always runs mgmtd, zebra and staticd).
 
@@ -162,6 +162,31 @@ One backend process (`kernel_sync`) applies `tarvos-qos`, `tarvos-nftables` and 
 Other components read the counters only through the agent, never from the maps. The Prometheus exporter and gNMI server run in the agent process. Everything else uses the root-only socket `/run/tarvos/telemetry.sock` (`GET /v1/snapshot`, JSON). Try `docker exec <node> tarvos-telemetry snapshot`.
 
 Requirements: a kernel with BTF (`/sys/kernel/btf/vmlinux`, standard on current distributions) and `CAP_SYS_ADMIN`, which Tarvos already needs for FRR (or `CAP_BPF` + `CAP_PERFMON`, both listed in `docker-compose.yml`). GNS3 and containerlab run nodes privileged. Without drop tracing (no BTF or no `CAP_PERFMON`), the agent logs why and keeps the traffic counters. If it cannot load at all, the node keeps working without telemetry. `TELEMETRY_ENABLED=no` turns it off.
+
+## Prometheus
+
+The telemetry agent serves `/metrics` on `PROMETHEUS_PORT` (9273, `PROMETHEUS_ENABLED=yes`), in the management VRF (`TELEMETRY_LISTEN_VRF` overrides it, `none` listens in every VRF). Each scrape reads one fresh snapshot from the agent.
+
+| Series | Labels |
+|---|---|
+| `tarvos_interface_packets_total`, `tarvos_interface_bytes_total` | `interface`, `direction` |
+| `tarvos_interface_packet_size_bytes` (histogram, buckets 64 ... 9216) | `interface`, `direction` |
+| `tarvos_interface_drops_total` | `interface`, `reason` |
+| `tarvos_vni_packets_total`, `tarvos_vni_bytes_total` | `vni`, `interface`, `direction` |
+| `tarvos_vni_drops_total` | `vni`, `interface` |
+| `tarvos_control_plane_packets_total`, `tarvos_control_plane_bytes_total` | `interface`, `protocol`, `direction` |
+| `tarvos_telemetry_up`, `tarvos_telemetry_info` | `version`, `attach`, `drop_tracing` |
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: tarvos
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["leaf1:9273", "leaf2:9273", "spine1:9273"]
+```
+
+Example queries: `rate(tarvos_interface_bytes_total{direction="rx"}[1m]) * 8` (bit/s), `sum by (protocol) (rate(tarvos_control_plane_packets_total[5m]))`, `histogram_quantile(0.9, rate(tarvos_interface_packet_size_bytes_bucket[5m]))`.
 
 ## LLDP over NETCONF
 
