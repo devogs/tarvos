@@ -88,6 +88,8 @@ def test_apply_rebuilds_only_on_change(monkeypatch, tmp_path):
     links = {"eth1": 5}
     monkeypatch.setattr(qos_sync, "ifindexes", lambda: dict(links))
     monkeypatch.setattr(qos_sync, "run", lambda command, check=True: calls.append(command))
+    kinds = {"eth1": "fq_codel", "eth9": "fq_codel"}
+    monkeypatch.setattr(qos_sync, "root_kind", lambda dev: kinds.get(dev))
     backend = QosBackend(owned_file=str(tmp_path / "owned.json"))
     config = {"qos": {"interface": [{"name": "eth1", "qdisc": "fq-codel"},
                                     {"name": "eth9", "qdisc": "fq-codel"}]}}  # fmt: skip
@@ -150,3 +152,22 @@ def test_failed_build_leaves_no_qdisc_and_orphans_are_removed(monkeypatch, tmp_p
     restarted.apply({})
     assert calls == [["tc", "qdisc", "del", "dev", "eth1", "root"]]
     assert restarted.owned == set()
+
+
+def test_qdisc_removed_behind_tarvos_is_rebuilt(monkeypatch, tmp_path):
+    # v2.1.1 chaos finding: "tc qdisc del dev eth1 root" was never repaired
+    import qos_sync
+
+    calls, kind = [], {"eth1": "htb"}
+    monkeypatch.setattr(qos_sync, "ifindexes", lambda: {"eth1": 5})
+    monkeypatch.setattr(qos_sync, "run", lambda command, check=True: calls.append(command))
+    monkeypatch.setattr(qos_sync, "root_kind", lambda dev: kind.get(dev))
+    backend = QosBackend(owned_file=str(tmp_path / "owned.json"))
+    config = {"qos": {"interface": [htb()]}}
+    backend.apply(config)
+    calls.clear()
+    backend.apply(config)
+    assert calls == []  # in place: nothing to do
+    kind["eth1"] = "noqueue"
+    backend.apply(config)
+    assert any(c[:6] == ["tc", "qdisc", "add", "dev", "eth1", "root"] for c in calls)

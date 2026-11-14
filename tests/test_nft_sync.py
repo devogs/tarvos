@@ -116,3 +116,30 @@ def test_every_failure_path_leaves_the_ruleset_alone(monkeypatch):
     with pytest.raises(nft_sync.BackendError):
         backend.apply(config)
     assert calls == [("-c", "-f", "-"), ("-f", "-")]
+
+
+def test_flushed_table_is_restored_and_unchanged_one_kept(monkeypatch):
+    # v2.1.1 chaos finding: "nft flush ruleset" left CoPP removed for good
+    import nft_sync
+
+    calls, present = [], {"table": True}
+
+    def nft(*args, script=None):
+        if args[:2] == ("list", "table"):
+            if not present["table"]:
+                raise nft_sync.BackendError("No such file or directory")
+            return ""
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(nft_sync, "nft", nft)
+    backend = nft_sync.NftBackend()
+    rule = {"name": "bgp", "protocol": "tcp", "destination-port": 179}
+    config = {"nftables": {"copp": {"rule": [rule]}}}
+    backend.apply(config)
+    calls.clear()
+    backend.apply(config)
+    assert calls == []  # periodic pass: in place, counters kept
+    present["table"] = False
+    backend.apply(config)
+    assert ("-f", "-") in calls
