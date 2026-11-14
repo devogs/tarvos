@@ -149,6 +149,12 @@ fi
 # --- 6. Python backend daemons ----------------------------------------------------
 # Kernel VRF/bridge/VXLAN devices (tarvos-vrf, tarvos-vxlan), then FRR: native FRR YANG
 # through mgmtd, the other daemons through vtysh/frr-reload.
+# watchfrr supervises the FRR daemons but is itself started by frrinit.sh: a supervised
+# guard restarts FRR when watchfrr is gone (configuration comes back from frr.conf and
+# frr_sync's periodic re-application).
+start frr_guard bash -c 'while sleep 5; do
+    pgrep -x watchfrr >/dev/null || { echo "[frr-guard] watchfrr is gone: restarting FRR" >&2; /usr/lib/frr/frrinit.sh restart >&2; }
+done'
 start netdev_sync python3 "${DAEMONS_DIR}/netdev_sync.py"
 start frr_sync python3 "${DAEMONS_DIR}/frr_sync.py"
 # LLDP: applies tarvos-lldp NETCONF configuration to lldpd and serves its neighbours.

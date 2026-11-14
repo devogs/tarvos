@@ -248,7 +248,13 @@ def main() -> int:
         def open_running() -> Any:
             return connection.start_session("running")
 
+        in_flight: dict[str, float] = {}
+
         def callback(event_session: Any, event: str, req_id: int, module: Any) -> None:
+            if event == "change":
+                in_flight[str(module)] = time.monotonic()
+            else:
+                in_flight.pop(str(module), None)
             try:
                 sync.on_change(event_session, module, event, open_running)
             except (ConfigError, mgmtd.MgmtdError, frr_tools.FrrError) as exc:
@@ -299,7 +305,19 @@ def main() -> int:
             except SysrepoError as exc:
                 log(f"WARNING: no operational data for {xpath} ({exc})")
         log(f"serving {len(modules)} modules")
-        stop.wait()
+        # Periodic re-application: FRR configuration changed behind Tarvos' back (vtysh)
+        # in Tarvos-owned blocks is put back; frr-reload sends nothing when nothing drifted.
+        interval = float(os.environ.get("FRR_RECONCILE_INTERVAL", "30"))
+        while not stop.wait(interval):
+            stale = time.monotonic() - 120
+            if any(t > stale for t in in_flight.values()):
+                continue  # a transaction is between change and done: do not undo it
+            try:
+                with open_running() as running:
+                    sync.dirty = True
+                    sync.apply(running)
+            except Exception as exc:  # keep the loop alive
+                log(f"ERROR: periodic re-application: {exc}")
     return 0
 
 
