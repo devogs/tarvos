@@ -271,7 +271,7 @@ class BgpState:
         self.frr = frr
 
     def _bgpd(self) -> bool:
-        return "bgpd" in self.frr.running_daemons()
+        return "bgpd" in self.frr.running_processes()
 
     def get(self, xpath: str) -> dict[str, Any]:
         """The subtree of one BGP_OPER_XPATHS entry, as a {"bgp": ...} dict ({} if empty)."""
@@ -439,7 +439,7 @@ class FrrDaemonState:
     def get(self, xpath: str) -> dict[str, Any]:
         name = xpath.rsplit("/", 1)[-1]
         daemon, command, parser = FRR_PROTOCOLS[name]
-        if daemon not in self.frr.running_daemons():
+        if daemon not in self.frr.running_processes():
             return {}
         (data,) = self.frr.show_json(command)
         items = parser(data)

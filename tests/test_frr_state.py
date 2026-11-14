@@ -113,7 +113,7 @@ class FakeFrr:
             "show bgp l2vpn evpn json": load("bgp_l2vpn_evpn.json"),
         }
 
-    def running_daemons(self):
+    def running_processes(self):
         return self.daemons
 
     def show_json(self, *commands):
@@ -188,7 +188,7 @@ class FakeDaemons:
             "show mpls ldp neighbor json": load("ldp_neighbor.json"),
         }
 
-    def running_daemons(self):
+    def running_processes(self):
         return self.daemons
 
     def show_json(self, *commands):
@@ -201,3 +201,18 @@ def test_frr_daemon_state_provider():
     assert pim["frr"]["state"]["pim"]["neighbor"][0]["address"] == "172.29.9.12"
     assert provider.get(f"{state.FRR_STATE}/vrrp")["frr"]["state"]["vrrp"]["router"]
     assert provider.get(f"{state.FRR_STATE}/bfd") == {}  # bfdd not running
+
+
+def test_running_processes_reads_proc_and_caches(tmp_path, monkeypatch):
+    from tarvos_frr import vtysh
+
+    for pid, comm in ((1, "tini"), (40, "bgpd"), (41, "zebra")):
+        (tmp_path / str(pid)).mkdir()
+        (tmp_path / str(pid) / "comm").write_text(comm + "\n")
+    (tmp_path / "self").mkdir()
+    monkeypatch.setattr(vtysh, "PROC", str(tmp_path))
+    monkeypatch.setattr(vtysh, "_seen", (0.0, set()))
+    assert vtysh.running_processes() == {"tini", "bgpd", "zebra"}
+    (tmp_path / "40" / "comm").write_text("gone\n")
+    assert "bgpd" in vtysh.running_processes()  # cached
+    assert "bgpd" not in vtysh.running_processes(max_age=0)

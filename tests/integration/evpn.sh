@@ -56,7 +56,8 @@ for n in 1 2; do
         --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
         --sysctl net.ipv4.ip_forward=1 \
         --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
-        -p "127.0.0.1::830" -p "127.0.0.1::57400" -e "FRR_DAEMONS=bgpd" "${IMAGE}" >/dev/null
+        -p "127.0.0.1::830" -p "127.0.0.1::57400" -p "127.0.0.1::9273" \
+        -e "FRR_DAEMONS=bgpd" "${IMAGE}" >/dev/null
     # Links are attached after boot, as containerlab does: eth1 fabric, eth2 LAN.
     docker network connect --ip "172.30.0.1${n}" "${NETS[0]}" "${leaf}"
     docker network connect "${NETS[n]}" "${leaf}"
@@ -173,6 +174,33 @@ echo "== eBPF telemetry: per-VNI VXLAN counters and BGP/VXLAN packets on the fab
 python3 "${HERE}/telemetry_check.py" evpn "$(docker exec "leaf1-${ID}" tarvos-telemetry snapshot)" ||
     fail "telemetry counters"
 
+echo "== Prometheus: BGP/EVPN health, and per-node container resources"
+metrics_url() { echo "http://127.0.0.1:$(docker port "leaf$1-${ID}" 9273/tcp | head -n1 | sed 's/.*://')/metrics"; }
+for _ in $(seq 1 15); do
+    python3 "${HERE}/metrics_check.py" "$(metrics_url 1)" --node --evpn >/dev/null 2>&1 && break
+    sleep 1
+done
+python3 "${HERE}/metrics_check.py" "$(metrics_url 1)" --node --evpn || fail "leaf1 metrics"
+# Each node reports its own container (cgroup), not the host: the two leaves differ,
+# both differ from the host's used memory (what /proc/meminfo shows inside a container),
+# and each is close to what Docker accounts for that container.
+read -r used1 < <(python3 "${HERE}/metrics_check.py" "$(metrics_url 1)" --print 'tarvos_container_memory_bytes{type="usage"}')
+read -r used2 < <(python3 "${HERE}/metrics_check.py" "$(metrics_url 2)" --print 'tarvos_container_memory_bytes{type="usage"}')
+host_used="$(docker exec "leaf1-${ID}" awk '/MemTotal/ {t=$2} /MemAvailable/ {a=$2} END {print (t-a)*1024}' /proc/meminfo)"
+docker_used="$(docker stats --no-stream --format '{{.MemUsage}}' "leaf1-${ID}" | awk '{print $1}')"
+python3 - "${used1}" "${used2}" "${host_used}" "${docker_used}" <<'EOF' || fail "container memory is not per node"
+import re, sys
+used1, used2, host = (float(v) for v in sys.argv[1:4])
+value, unit = re.match(r"([0-9.]+)([KMG]i?B)", sys.argv[4]).groups()
+docker = float(value) * {"KiB": 2**10, "MiB": 2**20, "GiB": 2**30, "KB": 1e3, "MB": 1e6, "GB": 1e9}[unit]
+print(f"   leaf1 {used1 / 2**20:.0f} MiB, leaf2 {used2 / 2**20:.0f} MiB, docker stats {docker / 2**20:.0f} MiB, host used {host / 2**20:.0f} MiB")
+assert used1 != used2, "both leaves report the same memory"
+assert abs(used1 - host) > 0.1 * host, "leaf1 reports the host's memory"
+# docker stats subtracts the inactive page cache: usage is at least that, at most a few
+# times more
+assert docker * 0.8 <= used1 <= docker * 4, "usage far from docker stats"
+EOF
+
 echo "== gNMI (gnmic): BGP/EVPN state, OpenConfig and eBPF counters, ON_CHANGE"
 gnmi_port="$(docker port "leaf1-${ID}" 57400/tcp | head -n1 | sed 's/.*://')"
 gn() { gnmic -a "127.0.0.1:${gnmi_port}" -u admin -p admin --skip-verify --timeout 30s "$@"; }
@@ -188,6 +216,10 @@ for t in 2 3 5; do
 done
 got="$(gn get --encoding proto --format flat --path '/interfaces/interface[name=eth1]/state/counters/in-pkts')"
 grep -Eq 'in-pkts: [1-9]' <<<"${got}" || fail "gNMI: OpenConfig in-pkts of eth1: ${got}"
+got="$(gn get --encoding proto --format flat --path '/telemetry/container/memory-usage')"
+grep -Eq 'memory-usage: [1-9]' <<<"${got}" || fail "gNMI: /telemetry/container/memory-usage: ${got}"
+got="$(gn get --encoding proto --format flat --path '/telemetry/container/process[name=bgpd]/resident-memory')"
+grep -Eq 'resident-memory: [1-9]' <<<"${got}" || fail "gNMI: bgpd resident memory: ${got}"
 got="$(gn get --encoding proto --format flat --path '/telemetry/vni[id=100]/rx/packets')"
 grep -Eq 'packets: [1-9]' <<<"${got}" || fail "gNMI: tarvos-telemetry VNI 100: ${got}"
 # ON_CHANGE: red1 goes down while subscribed

@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 VTYSH = os.environ.get("VTYSH", "vtysh")
@@ -51,7 +52,39 @@ def running_config() -> str:
 
 
 def running_daemons() -> set[str]:
+    """Daemons vtysh is connected to (exact: used to accept or refuse configuration)."""
     return set(vtysh("show daemons").split())
+
+
+PROC = os.environ.get("TARVOS_PROC", "/proc")
+_seen: tuple[float, set[str]] = (0.0, set())
+
+
+def running_processes(max_age: float = 2.0) -> set[str]:
+    """Names (comm) of the running processes, cached for ``max_age`` seconds.
+
+    For operational data only: one <get> asks several times whether bgpd, pimd, ldpd,
+    ... run, and ``show daemons`` costs a vtysh process (about 10 ms of CPU) each time.
+    """
+    global _seen
+    now = time.monotonic()
+    if now - _seen[0] < max_age:
+        return _seen[1]
+    names = set()
+    try:
+        entries = os.listdir(PROC)
+    except OSError:
+        entries = []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(os.path.join(PROC, entry, "comm"), encoding="utf-8") as handle:
+                names.add(handle.read().strip())
+        except OSError:
+            continue
+    _seen = (now, names)
+    return names
 
 
 def mgmt_transaction(commands: list[str]) -> None:

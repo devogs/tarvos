@@ -1,0 +1,119 @@
+{
+  "tarvos-bgp:bgp": {
+    "state": {
+      "instance": [
+        {
+          "vrf": "RED",
+          "asn": 65000,
+          "router-id": "10.10.1.1",
+          "l3vni": 5000,
+          "router-mac": "f6:57:0f:e3:e4:76",
+          "configured-neighbors": 0,
+          "established-neighbors": 0
+        },
+        {
+          "vrf": "default",
+          "asn": 65000,
+          "router-id": "10.255.0.1",
+          "configured-neighbors": 1,
+          "established-neighbors": 1,
+          "neighbor": [
+            {
+              "address": "172.30.0.12",
+              "description": "leaf2",
+              "hostname": "leaf2",
+              "remote-as": 65000,
+              "local-as": 65000,
+              "type": "internal",
+              "remote-router-id": "10.255.0.2",
+              "session-state": "established",
+              "uptime": "18",
+              "local-address": "172.30.0.11",
+              "local-port": 54058,
+              "remote-port": 179,
+              "hold-time": 180,
+              "keepalive": 60,
+              "connections-established": 1,
+              "connections-dropped": 0,
+              "last-reset-reason": "No path to specified Neighbor",
+              "messages": {
+                "received": "10",
+                "sent": "8",
+                "updates-received": "8",
+                "updates-sent": "6",
+                "notifications-received": "0",
+                "notifications-sent": "0"
+              },
+              "address-family": [
+                {
+                  "name": "ipv4-unicast",
+                  "prefixes-received": 1,
+                  "prefixes-sent": 1
+                },
+                {
+                  "name": "l2vpn-evpn",
+                  "prefixes-received": 7,
+                  "prefixes-sent": 3
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "evpn": {
+        "vni": [
+          {
+            "vni": 100,
+            "type": "l2",
+            "vxlan-interface": "vx100",
+            "bridge": "br100",
+            "tenant-vrf": "RED",
+            "local-vtep": "10.255.0.1",
+            "remote-vtep": [
+              "10.255.0.2"
+            ],
+            "mac-count": 3,
+            "arp-nd-count": 1
+          },
+          {
+            "vni": 5000,
+            "type": "l3",
+            "vxlan-interface": "vx5000",
+            "bridge": "br5000",
+            "tenant-vrf": "RED",
+            "local-vtep": "10.255.0.1",
+            "mac-count": 1,
+            "arp-nd-count": 1,
+            "oper-status": "up",
+            "router-mac": "f6:57:0f:e3:e4:76",
+            "l2vni": [
+              100
+            ]
+          }
+        ],
+        "route-count": [
+          {
+            "route-type": 1,
+            "count": 0
+          },
+          {
+            "route-type": 2,
+            "count": 4
+          },
+          {
+            "route-type": 3,
+            "count": 2
+          },
+          {
+            "route-type": 4,
+            "count": 0
+          },
+          {
+            "route-type": 5,
+            "count": 4
+          }
+        ]
+      }
+    }
+  }
+}

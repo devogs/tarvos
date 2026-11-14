@@ -31,7 +31,8 @@ module tarvos-aaa {
   revision 2026-11-14 {
     description
       "Backend (tarvos-aaa-sync): runtime servers and local fallback. State:
-       effective settings, server reachability, latest authentications.";
+       effective settings, server reachability, latest authentications.
+       Tarvos 2.1.1: authentication counters (authentication-count).";
   }
   revision 2026-11-12 {
     description
@@ -206,6 +207,45 @@ module tarvos-aaa {
         }
       }
 
+      list authentication-count {
+        key "method result";
+        description
+          "Authentications since the node started, per method and result
+           (every PAM outcome recorded by Tarvos: SSH, NETCONF, gNMI).";
+        leaf method {
+          type enumeration {
+            enum tacacs {
+              description
+                "Checked against TACACS+.";
+            }
+            enum local {
+              description
+                "Checked against the local account (admin).";
+            }
+          }
+          description
+            "Authentication method.";
+        }
+        leaf result {
+          type enumeration {
+            enum success {
+              description
+                "Accepted.";
+            }
+            enum failure {
+              description
+                "Refused.";
+            }
+          }
+          description
+            "Outcome.";
+        }
+        leaf count {
+          type yang:counter64;
+          description
+            "Number of authentications with this method and result.";
+        }
+      }
       container last-tacacs-authentication {
         description
           "Latest authentication answered by TACACS+.";

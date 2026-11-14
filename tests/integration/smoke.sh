@@ -126,8 +126,9 @@ snapshot="$(docker exec "${NAME}" tarvos-telemetry snapshot)" || {
 python3 "$(dirname "$0")/telemetry_check.py" smoke "${snapshot}" || fail "unexpected telemetry snapshot"
 
 echo "== Prometheus /metrics (port 9273, management VRF)"
-python3 "$(dirname "$0")/metrics_check.py" "http://127.0.0.1:${PROMETHEUS_HOST_PORT}/metrics" ||
+python3 "$(dirname "$0")/metrics_check.py" "http://127.0.0.1:${PROMETHEUS_HOST_PORT}/metrics" --node ||
     fail "Prometheus exporter"
+
 
 mem="$(docker stats --no-stream --format '{{.MemUsage}}' "${NAME}" | awk '{print $1}')"
 printf 'BOOT_SECONDS=%s\nMEM_USAGE=%s\n' "${boot_seconds}" "${mem}" >metrics.env
