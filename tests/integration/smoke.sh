@@ -21,7 +21,7 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 start=$(date +%s)
-docker run -d --name "${NAME}" \
+docker run -d --name "${NAME}" --hostname smoke-node \
     --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
     --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
     -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" -p "127.0.0.1:${PROMETHEUS_HOST_PORT}:9273" \
@@ -95,6 +95,11 @@ grep -Eq 'Transmit delay:[[:space:]]+30' <<<"${lldp_conf}" || {
     echo "${lldp_conf}" >&2
     fail "lldpd did not apply /etc/lldpd.d/tarvos.conf"
 }
+
+# v2.1.0 bug: the runtime backend re-applied "tarvos" as the system name on every node.
+sleep 2
+sysname="$(docker exec "${NAME}" lldpcli show chassis | awk '/SysName:/ {print $2}')"
+[ "${sysname}" = "smoke-node" ] || fail "LLDP system name is '${sysname}', not the hostname"
 
 echo "== LLDP configured over NETCONF is applied by lldpd, and removing it restores the default"
 nc_lldp="$(dirname "$0")/netconf_lldp.py"

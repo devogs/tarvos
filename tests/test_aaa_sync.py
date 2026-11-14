@@ -103,3 +103,24 @@ def test_backend_writes_files_once(tmp_path, monkeypatch):
     assert len(writes) == 1 and backend.source == "environment"
     backend.apply({"aaa": {"tacacs": {"server": [{"address": "192.0.2.9", "secret": "z"}]}}})
     assert len(writes) == 2 and backend.state({})["aaa"]["state"]["server-source"] == "netconf"
+
+
+def test_failed_write_is_retried_by_the_restore(tmp_path, monkeypatch):
+    import aaa_sync
+
+    monkeypatch.setattr(aaa_sync.threading, "Thread", lambda **kw: type("T", (), {
+        "start": lambda self: None})())  # fmt: skip
+    writes = []
+
+    def write(settings, root):
+        if settings.servers == ("192.0.2.9",):
+            raise OSError("No space left on device")
+        writes.append(settings)
+
+    monkeypatch.setattr(aaa_sync, "write_auth_files", write)
+    backend = AaaBackend(root=tmp_path, env={"TACACS_SERVER": "10.0.0.1", "TACACS_SECRET": "k"})
+    backend.apply({})
+    with pytest.raises(OSError):
+        backend.apply({"aaa": {"tacacs": {"server": [{"address": "192.0.2.9", "secret": "z"}]}}})
+    backend.apply({})  # restore of the running configuration: must rewrite, not skip
+    assert len(writes) == 2

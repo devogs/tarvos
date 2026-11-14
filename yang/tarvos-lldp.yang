@@ -47,7 +47,7 @@ module tarvos-lldp {
       }
       units "seconds";
       description
-        "Time between LLDP advertisements. Unset: LLDP_TX_INTERVAL.";
+        "Time between LLDP advertisements. Unset: LLDP_TX_INTERVAL (seconds).";
     }
 
     leaf tx-hold {
@@ -196,7 +196,7 @@ module tarvos-lldp {
           type uint16;
           units "seconds";
           description
-            "Remaining holdtime advertised by the neighbour.";
+            "Remaining holdtime advertised by the neighbour (seconds).";
         }
       }
     }

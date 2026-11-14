@@ -163,6 +163,9 @@ class AaaBackend:
         settings, source = effective(self.base, config)
         rendered = "".join(render_pam(settings, with_session=w) for w in (True, False))
         if rendered != self.rendered:
+            # Forget what was rendered until the write succeeds: a failed write must not
+            # make the restore that follows believe the files are already current.
+            self.rendered = None
             write_auth_files(settings, self.root)
             self.rendered = rendered
             servers = ", ".join(settings.servers) or "none"

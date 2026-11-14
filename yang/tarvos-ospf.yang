@@ -159,7 +159,7 @@ module tarvos-ospf {
       }
       units "seconds";
       description
-        "Hello interval.";
+        "Hello interval (seconds).";
     }
     leaf dead-interval {
       type uint16 {
@@ -167,7 +167,7 @@ module tarvos-ospf {
       }
       units "seconds";
       description
-        "Dead interval.";
+        "Dead interval (seconds).";
     }
     leaf priority {
       type uint8;
@@ -221,7 +221,7 @@ module tarvos-ospf {
         }
         units "Mbit/s";
         description
-          "Reference bandwidth for cost calculation.";
+          "Reference bandwidth for cost calculation (Mbit/s).";
       }
       leaf maximum-paths {
         type uint16 {
@@ -321,7 +321,7 @@ module tarvos-ospf {
         }
         units "Mbit/s";
         description
-          "Reference bandwidth for cost calculation.";
+          "Reference bandwidth for cost calculation (Mbit/s).";
       }
       leaf maximum-paths {
         type uint16 {

@@ -86,6 +86,12 @@ class Runner:
                 self.log(f"refused: {exc}")
                 self.restore(read_running)
                 raise
+            except Exception as exc:
+                # Not a validation error (I/O error, tc/nft crash, ...): the change may be
+                # partly applied, so restore as well and refuse with a clear message.
+                self.log(f"refused (internal error): {exc!r}")
+                self.restore(read_running)
+                raise BackendError(f"{self.backend.name}: could not apply: {exc}") from exc
             self.log("configuration applied")
         elif event == "abort":
             self.log("transaction aborted, restoring the running configuration")

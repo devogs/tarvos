@@ -112,3 +112,26 @@ def test_secret_never_logged(tmp_path, capsys):
     configure(env, tmp_path, set_password=False)
     captured = capsys.readouterr()
     assert "topsecret" not in captured.out + captured.err
+
+
+def test_auth_files_are_replaced_all_or_nothing(tmp_path, monkeypatch):
+    import aaa_configure
+
+    settings = aaa_configure.load_settings({"TACACS_SERVER": "10.0.0.1", "TACACS_SECRET": "k"})
+    aaa_configure.write_auth_files(settings, tmp_path)
+    before = {p: p.read_text() for p in (tmp_path / "etc/pam.d").iterdir()}
+    real = aaa_configure._stage
+    calls = []
+
+    def flaky(root, path, content, mode):
+        calls.append(path)
+        if len(calls) == 3:
+            raise OSError("No space left on device")
+        return real(root, path, content, mode)
+
+    monkeypatch.setattr(aaa_configure, "_stage", flaky)
+    other = aaa_configure.load_settings({"TACACS_SERVER": "10.0.0.2", "TACACS_SECRET": "x"})
+    with pytest.raises(OSError):
+        aaa_configure.write_auth_files(other, tmp_path)
+    after = {p: p.read_text() for p in (tmp_path / "etc/pam.d").iterdir()}
+    assert after == before  # no file replaced, no temporary file left behind

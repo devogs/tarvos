@@ -39,6 +39,7 @@ module tarvos-telemetry {
     }
     leaf bytes {
       type yang:counter64;
+      units "bytes";
       description
         "Bytes.";
     }

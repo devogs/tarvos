@@ -45,6 +45,8 @@ ssh -p 2222 admin@localhost          # password: ADMIN_PASSWORD (default "admin"
 ssh -p 8300 -s admin@localhost netconf
 ```
 
+Ports 2222 and 8300 are the host ports `docker-compose.yml` maps to the node's SSH (22) and NETCONF (830). A node run directly on a network, as in GNS3 or containerlab, listens on 22, 830, 9273 (Prometheus) and 57400 (gNMI) of its management address: `ssh admin@<node>`, `ssh -p 830 -s admin@<node> netconf`.
+
 The container needs `NET_ADMIN`, `NET_RAW` and `SYS_ADMIN` (FRR's zebra/bgpd require the last for VRF/netns handling); see `docker-compose.yml`.
 
 The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin`), so no volume is needed. Custom modules mounted at `/opt/tarvos/yangs` are registered as well (and override a built-in of the same name). Registration happens at every boot, before Netopeer2 starts.
@@ -110,13 +112,19 @@ One `<edit-config>` (excerpt, see [tests/integration/netconf_evpn.py](tests/inte
 
 `FRR_DAEMONS=bgpd` is enough for this leaf; add `bfdd`, `ospfd`, ... for the corresponding models.
 
+Things the example takes for granted:
+
+- **Underlay reachability.** Every VTEP address (`source-address`, a loopback) must be reachable in the default VRF, and so must the next hop of every EVPN route. Routes carry the originating VTEP as next hop; with a route reflector, it reflects them unchanged, so the leaves need routes to each other's loopbacks, not only to the spine. Advertise the loopbacks (and, if the leaves only peer with the spine, the link subnets) in the underlay (`redistribute connected` with a prefix list, OSPF, IS-IS), or set `next-hop-self` where it applies. Without it, EVPN routes are received and listed in `/bgp/state/evpn/route`, but nothing is forwarded: check `vrfexec default ping <remote VTEP>`.
+- **MTU.** VXLAN over IPv4 adds 50 bytes. `vx<vni>`/`br<vni>` default to 1450 (`tarvos-vxlan` `mtu`), which fits a 1500-byte underlay; with a jumbo underlay, set `mtu` to the underlay MTU minus 50. Give the hosts the same MTU: a bridged frame larger than the overlay MTU is dropped without any error (routed packets get an ICMP "fragmentation needed").
+- **Type-2 MAC+IP routes.** A leaf learns a host's IP address from the ARP/ND exchanges of its anycast gateway. Until a host talks to its gateway (or is resolved by it), it is advertised as a MAC-only type-2 route; two hosts that only talk to each other at layer 2 never produce MAC+IP routes. This is FRR's behaviour, and the NETCONF state reports it as is.
+
 ## Operational state over NETCONF
 
 `<get>` (or `<get-data>` on the operational datastore) returns live state next to the configuration, so a controller can verify a fabric without `vtysh`. State is read from FRR (`show ... json`) and the kernel on every request; a filtered `<get>` only runs the commands its subtree needs.
 
 | Node (read-only) | Content | Source |
 |---|---|---|
-| `/tarvos-bgp:bgp/state/instance[vrf]` | AS, router ID, L3VNI and router MAC, neighbour counts; per neighbour: session state, uptime, TCP endpoints, negotiated timers, message counters, last reset reason, prefixes received/sent per address family | `show bgp vrfs json`, `show bgp vrf all neighbors json` |
+| `/tarvos-bgp:bgp/state/instance[vrf]` | AS, router ID, L3VNI and router MAC, neighbour counts; per neighbour: session state, uptime (seconds), TCP endpoints, negotiated timers, message counters, last reset reason, prefixes received/sent per address family | `show bgp vrfs json`, `show bgp vrf all neighbors json` |
 | `/tarvos-bgp:bgp/state/evpn/vni[vni]` | L2/L3 type, VXLAN device, bridge, tenant VRF, local and remote VTEPs, MAC and ARP/ND counts; L3VNI status, router MAC and L2VNIs | `show evpn vni detail json` (zebra; also without bgpd) |
 | `/tarvos-bgp:bgp/state/evpn/route-count[route-type]` | Number of EVPN routes of each type 1-5 | `show bgp l2vpn evpn json` |
 | `/tarvos-bgp:bgp/state/evpn/route[route-distinguisher prefix]` | Every EVPN route: type, MAC, IP, prefix length, path count; best path source/peer, next hops, route targets, router MAC, AS path | `show bgp l2vpn evpn json` |
@@ -139,6 +147,8 @@ Example: the EVPN view of a leaf.
   </state></bgp>
 </filter></get>
 ```
+
+Units: every numeric state leaf carries a YANG `units` statement, repeated in its description (durations in seconds unless stated, rates in kbit/s, counters in packets or bytes).
 
 `tests/integration/netconf_state.py` is a small controller-side check that verifies sessions, VNIs and type-2/type-3/type-5 routes from these trees only.
 
@@ -292,6 +302,17 @@ vrfexec mgmt curl -sI https://example.com
 - The TACACS+ secret is written only to root-only (`0600`) PAM files and is never logged. Over NETCONF, `admin` can write it but not read it back.
 - NETCONF users are authenticated through PAM under their own name, so TACACS+ users need no per-user setup in Tarvos and appear by name in NETCONF logs. Access is controlled by NACM: `admin` has full access, TACACS+ users get `TACACS_NETCONF_ACCESS` (read-only by default; set `rw` to let them configure).
 - Both SSH `password` (ncclient, Ansible `netconf`) and `keyboard-interactive` (OpenSSH `ssh -s`, `netopeer2-cli`) go through the same PAM stack, so TACACS+ users work with either. Upstream libnetconf2 checks `password` against the local password file only; the image carries a small patch (`docker/patches/libnetconf2-password-pam.patch`) to route it through PAM.
+
+## Upgrading from 2.1.0
+
+2.1.1 is a hardening release: existing `.env` files and NETCONF configurations keep working, and no action is required. Behaviour that changes:
+
+- **VXLAN MTU:** `vx<vni>`/`br<vni>` get MTU 1450 when `tarvos-vxlan` `mtu` is unset (was 1500, which silently dropped packets of more than 1450 bytes on a 1500-byte underlay). Set `mtu` if your underlay is larger.
+- **Tenant VRF isolation:** every Tarvos VRF table gets an `unreachable default` at the highest metric. Before, traffic forwarded from a tenant port to an address the VRF had no route for could leave through the management interface.
+- **QoS:** the htb root class is now `1:ffff`, so class id 1 works. A refused or failed QoS edit no longer leaves a qdisc on the interface. Counters restart from zero once, at the first application.
+- **LLDP:** the system name is the container hostname (it was `tarvos` on every node). `LLDP_SYSTEM_NAME` still overrides it.
+- **Management VRF:** if the management default route disappears (Docker moves the gateway when a network is connected after boot), it is restored within 10 s.
+- **Toolbox:** `ping`, `traceroute`, `mtr`, `dig`, `tcpdump`, `curl`, `nc`, `iperf3`, ... and `vrfexec`, see [Troubleshooting](#troubleshooting).
 
 ## Upgrading from 2.0
 

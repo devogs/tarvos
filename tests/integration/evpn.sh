@@ -116,6 +116,32 @@ h2_mac="$(docker exec "h2-${ID}" cat /sys/class/net/eth0/address)"
 wait_for 30 "leaf1 has no type-2 route for h2 (${h2_mac}) in NETCONF state" \
     sh -c "python3 '${HERE}/netconf_get.py' 127.0.0.1 $(port 1) '<bgp xmlns=\"${BGP_NS}\"><state><evpn><route/></evpn></state></bgp>' | grep -qi '<mac>${h2_mac}</mac>'"
 
+echo "== type-2 MAC+IP for h2 once it talks to its gateway; NETCONF agrees with FRR"
+# v2.1.0 lab question: leaf2's host was seen as MAC-only. A leaf learns a host's IP from
+# its SVI neighbour table, so only after the host exchanged ARP with the anycast gateway:
+# before that the route is MAC-only, in FRR and in the NETCONF state alike.
+type2_netconf() {  # type-2 prefixes of MAC $1 in leaf1's NETCONF state
+    python3 "${HERE}/netconf_get.py" 127.0.0.1 "$(port 1)" \
+        "<bgp xmlns=\"${BGP_NS}\"><state><evpn><route/></evpn></state></bgp>" |
+        grep -io "<prefix>\[2\]:\[0\]:\[48\]:\[$1\][^<]*</prefix>" | sed 's/<[^>]*>//g' | sort -u
+}
+type2_frr() {  # the same from FRR (reference)
+    vty 1 'show bgp l2vpn evpn route type macip json' | python3 -c "
+import json, sys
+for rd, routes in json.load(sys.stdin).items():
+    if isinstance(routes, dict):
+        for prefix in routes:
+            if prefix.lower().startswith('[2]:[0]:[48]:[$1]'):
+                print(prefix)" | sort -u
+}
+docker exec "h2-${ID}" ping -c1 -W2 10.1.100.1 >/dev/null || fail "h2 cannot ping its anycast gateway"
+wait_for 30 "leaf1 has no MAC+IP type-2 route for h2 in NETCONF state" \
+    sh -c "python3 '${HERE}/netconf_get.py' 127.0.0.1 $(port 1) '<bgp xmlns=\"${BGP_NS}\"><state><evpn><route/></evpn></state></bgp>' | grep -qi ':\[${h2_mac}\]:\[32\]:\[10.1.100.12\]'"
+nc_routes="$(type2_netconf "${h2_mac}")"
+frr_routes="$(type2_frr "${h2_mac}")"
+[ "${nc_routes}" = "${frr_routes}" ] ||
+    fail "NETCONF and FRR disagree on h2's type-2 routes: NETCONF ${nc_routes} / FRR ${frr_routes}"
+
 echo "== symmetric IRB over L3VNI 5000: h1 -> leaf2's 10.10.2.1 (VRF RED)"
 wait_for 30 "h1 cannot reach 10.10.2.1 (symmetric IRB)" docker exec "h1-${ID}" ping -c1 -W1 10.10.2.1
 for _ in $(seq 1 30); do nc_state 2>/dev/null && break; sleep 1; done
@@ -136,8 +162,12 @@ grep -q 'VXLAN.* vni 100' <<<"${cap}" || fail "tcpdump did not decode VXLAN VNI 
 # so 1422 bytes of ICMP payload (+ 28 of IP/ICMP headers) pass with DF set.
 docker exec "leaf1-${ID}" vrfexec RED ping -M "do" -s 1422 -c1 -W2 10.10.2.1 >/dev/null ||
     fail "1450-byte packets with DF do not cross the fabric"
-docker exec "leaf1-${ID}" vrfexec RED tracepath -n 10.10.2.1 | grep -q 'pmtu' ||
-    fail "tracepath reports no path MTU"
+# v2.1.1 fix: one byte more is refused at once with the overlay MTU (it was silently
+# dropped in the underlay: VXLAN devices had the kernel default MTU, 1500).
+out="$(docker exec "leaf1-${ID}" vrfexec RED ping -M "do" -s 1423 -c1 -W2 10.10.2.1 2>&1 || true)"
+grep -qi 'message too long\|mtu=1450' <<<"${out}" || fail "1451-byte packet not refused locally (overlay MTU 1450): ${out}"
+out="$(docker exec "leaf1-${ID}" vrfexec RED tracepath -n -m 4 10.10.2.1 2>&1 || true)"
+grep -q 'pmtu 1450' <<<"${out}" || fail "tracepath does not report pmtu 1450: ${out}"
 
 echo "== eBPF telemetry: per-VNI VXLAN counters and BGP/VXLAN packets on the fabric port"
 python3 "${HERE}/telemetry_check.py" evpn "$(docker exec "leaf1-${ID}" tarvos-telemetry snapshot)" ||

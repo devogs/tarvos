@@ -204,7 +204,7 @@ module tarvos-isis {
         }
         units "seconds";
         description
-          "Hello interval (both levels).";
+          "Hello interval (both levels) (seconds).";
       }
       leaf bfd {
         type boolean;
