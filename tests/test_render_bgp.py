@@ -194,3 +194,46 @@ def test_empty_configuration_owns_nothing():
     out = render({})
     assert out.empty and out.daemons == set()
     assert out.blocks == [] and isinstance(Block("x"), Block)
+
+
+def test_gap_audit_leaves_match_frr_running_config():
+    """v2.1.1 YANG gap audit: cluster-id, graceful-restart, listen ranges, local-as,
+    remove-private-as and as-override, in the order FRR 10.7 prints them."""
+    out = render(
+        {"bgp": {"instance": [{
+            "vrf": "default", "asn": 65010, "router-id": "1.1.1.1",
+            "default-ipv4-unicast": False, "cluster-id": "10.9.9.9", "graceful-restart": True,
+            "bestpath-multipath-relax": True, "listen-limit": 50,
+            "listen-range": [{"prefix": "10.8.0.0/16", "peer-group": "PG"}],
+            "peer-group": [{"name": "PG", "remote-as": "external"}],
+            "neighbor": [
+                {"address": "10.0.0.2", "remote-as": "65020",
+                 "local-as": {"asn": 65099, "no-prepend": True, "replace-as": True},
+                 "address-family": [{"name": "ipv4-unicast", "remove-private-as": True,
+                                     "as-override": True}]},
+                {"address": "10.0.0.3", "remote-as": "65030", "local-as": {"asn": 65098}},
+            ],
+        }]}}
+    )  # fmt: skip
+    frr = """router bgp 65010
+ bgp router-id 1.1.1.1
+ no bgp default ipv4-unicast
+ bgp cluster-id 10.9.9.9
+ bgp graceful-restart
+ bgp bestpath as-path multipath-relax
+ neighbor PG peer-group
+ neighbor PG remote-as external
+ neighbor 10.0.0.2 remote-as 65020
+ neighbor 10.0.0.2 local-as 65099 no-prepend replace-as
+ neighbor 10.0.0.3 remote-as 65030
+ neighbor 10.0.0.3 local-as 65098
+ bgp listen limit 50
+ bgp listen range 10.8.0.0/16 peer-group PG
+ !
+ address-family ipv4 unicast
+  neighbor 10.0.0.2 remove-private-AS
+  neighbor 10.0.0.2 as-override
+ exit-address-family
+exit
+"""  # captured from FRR 10.7.1 show running-config
+    assert to_text(out.blocks) == to_text(parse(frr))

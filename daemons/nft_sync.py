@@ -155,9 +155,12 @@ class NftBackend:
     module = MODULE
     xpath = f"/{MODULE}:nftables"
     name = "nft-sync"
-    interval = None  # the table is ours alone: nothing to drift
+    # Re-checked every 10 s: "nft flush ruleset" behind Tarvos' back must not leave the
+    # control plane unprotected. Unchanged and present: nothing is sent (counters kept).
+    interval: float | None = 10.0
 
     def __init__(self) -> None:
+        self.last: str | None = None
         self.oper = [
             (f"/{MODULE}:nftables/copp/state", self.copp_state),
             (f"/{MODULE}:nftables/copp/rule/state", self.copp_state),
@@ -165,8 +168,18 @@ class NftBackend:
 
     def apply(self, config: dict[str, Any]) -> None:
         script = render(config)
+        if script == self.last and self._table_present() == enabled(config):
+            return
         nft("-c", "-f", "-", script=script)  # dry run: refuse before touching anything
         nft("-f", "-", script=script)
+        self.last = script
+
+    def _table_present(self) -> bool:
+        try:
+            nft("list", "table", *TABLE)
+            return True
+        except BackendError:
+            return False
 
     def copp_state(self, config: dict[str, Any]) -> dict[str, Any]:
         listing = None

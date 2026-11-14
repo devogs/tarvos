@@ -92,3 +92,24 @@ def test_failed_reload_keeps_ownership_for_resync():
     sync.resync(FakeSession({}))  # committed datastore has no BGP
     assert "router bgp" not in frr.reloads[-1]
     assert sync.rendered["tarvos-bgp"].empty and not sync.dirty
+
+
+def test_frr_reload_errors_are_clean_and_valid_in_xml():
+    # v2.1.1 day-2 finding: an ASN change refused by bgpd came back with frr-reload's
+    # ANSI colours (ESC is invalid in XML 1.0: ncclient could not parse the rpc-error).
+    from tarvos_common import operator_message
+    from tarvos_frr.vtysh import _clean
+
+    raw = (
+        "2026-11-14 19:41:55,103 \x1b[91m  ERROR\x1b[0m: Failed to execute no router bgp 65000\n"
+        "[566|mgmtd] sending configuration\n[573|bgpd] sending configuration\n"
+        "BGP instance name and AS number mismatch\nBGP instance is already running; AS is 65000\n"
+        "Waiting for children to finish applying config...\n[566|mgmtd] done\n"
+        "BGP instance is already running; AS is 65000\n"
+    )
+    assert _clean(raw) == (
+        "Failed to execute no router bgp 65000\nBGP instance name and AS number mismatch\n"
+        "BGP instance is already running; AS is 65000"
+    )
+    assert operator_message("a\x1b[1mb\x00c\x07") == "abc"
+    assert len(operator_message("x" * 5000)) == 2000

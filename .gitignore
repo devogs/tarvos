@@ -28,3 +28,6 @@ tmp/
 *.tmp
 *.log
 telemetry/bin/
+tests/lab/.state/
+tests/day2/report/
+tests/chaos/report/

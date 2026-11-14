@@ -7,6 +7,10 @@ select = ["E", "F", "I", "B", "S", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S104", "S105", "S106"]
+# Lab and campaign harness: long XML/command lines, docker/ssh subprocesses by design.
+"tests/day2/**" = ["S101", "S105", "S106", "S107", "S603", "S607", "E501"]
+"tests/lab/**" = ["S104", "S107", "S603", "S607", "E501"]
+"tests/chaos/**" = ["S101", "S105", "S106", "S107", "S110", "S311", "S603", "S607", "E501", "B023"]
 "scripts/aaa_configure.py" = ["S603", "S607"]
 "daemons/lldp_sync.py" = ["S603", "S607"]
 "daemons/netdev_sync.py" = ["S603", "S607"]

@@ -24,6 +24,15 @@ fi
 
 ip link show "${IFACE}" >/dev/null 2>&1 || { log "WARNING: ${IFACE} not found, skipping"; exit 0; }
 
+# The management network is the one with the default route. If it is not on ${IFACE},
+# interface names probably moved (Docker may reorder eth0/eth1/... on restart when a
+# container has several networks: pin them with the endpoint driver option
+# com.docker.network.endpoint.ifname, or set MGMT_INTERFACE).
+default_dev="$(ip -4 route show default | awk '/default/ {for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
+if [ -n "${default_dev}" ] && [ "${default_dev}" != "${IFACE}" ]; then
+    log "WARNING: the default route is on ${default_dev}, not on ${IFACE} (MGMT_INTERFACE): interface names may have moved"
+fi
+
 if [ "$(ip -o link show "${IFACE}" | grep -c "master ${VRF} ")" -gt 0 ]; then
     log "${IFACE} already in VRF ${VRF}"
     exit 0

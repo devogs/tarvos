@@ -40,7 +40,7 @@ jobs:
         run: ruff check scripts tests daemons
 
       - name: shellcheck
-        run: shellcheck scripts/*.sh tests/integration/*.sh
+        run: shellcheck scripts/*.sh tests/integration/*.sh tests/lab/*.sh tests/day2/*.sh tests/chaos/*.sh
 
       - name: hadolint
         uses: hadolint/hadolint-action@v3.1.0
@@ -130,6 +130,16 @@ jobs:
         run: |
           sudo modprobe -a sch_htb cls_u32 macvlan 2>/dev/null || true
           tests/integration/state.sh "$LOCAL_TAG"
+
+      - name: Day-2 campaign, short subset (lab with spine, two leaves, hosts, TACACS+, syslog)
+        run: tests/day2/run.sh "$LOCAL_TAG" --short
+
+      - name: Day-2 report
+        if: always()
+        run: |
+          if [ -f tests/day2/report/day2.md ]; then
+            cat tests/day2/report/day2.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Baseline metrics (informational, no caps)
         if: always()

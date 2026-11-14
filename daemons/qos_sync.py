@@ -165,6 +165,18 @@ def tc_json(*args: str) -> list[dict[str, Any]]:
     return json.loads(run(["tc", "-s", "-j", *args]).stdout or "[]")
 
 
+TC_KIND = {"htb": "htb", "prio": "prio", "fq-codel": "fq_codel", "cake": "cake"}
+
+
+def root_kind(dev: str) -> str | None:
+    """Kind of the root qdisc of ``dev`` (None if it cannot be read)."""
+    try:
+        qdiscs = tc_json("qdisc", "show", "dev", dev, "root")
+    except BackendError:
+        return None
+    return next((str(q.get("kind")) for q in qdiscs if q.get("root")), None)
+
+
 def ifindexes() -> dict[str, int]:
     result = run(["ip", "-j", "link", "show"])
     return {link["ifname"]: int(link["ifindex"]) for link in json.loads(result.stdout or "[]")}
@@ -271,8 +283,8 @@ class QosBackend:
                 continue
             self.missing.discard(name)
             key = (json.dumps(interface, sort_keys=True), present[name])
-            if self.applied.get(name) == key:
-                continue
+            if self.applied.get(name) == key and root_kind(name) == TC_KIND[interface["qdisc"]]:
+                continue  # built and still in place (a "tc qdisc del" behind us rebuilds)
             commands = build(interface)  # validate before touching the interface
             self.applied.pop(name, None)
             run(["tc", "qdisc", "del", "dev", name, "root"], check=False)

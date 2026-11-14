@@ -66,6 +66,8 @@ The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin
 | `TELEMETRY_ENABLED`, `TELEMETRY_EXCLUDE`, `TELEMETRY_SYNC_INTERVAL`, `TELEMETRY_LISTEN_VRF` | eBPF telemetry agent, see [eBPF telemetry](#ebpf-telemetry) |
 | `PROMETHEUS_ENABLED`, `PROMETHEUS_PORT`, `PROMETHEUS_ROUTING_METRICS`, `PROMETHEUS_KERNEL_METRICS`, `PROMETHEUS_STATE_CACHE` | `/metrics` endpoint and which series it serves, see [Prometheus](#prometheus) |
 | `GNMI_ENABLED`, `GNMI_PORT`, `GNMI_TLS`, `GNMI_TLS_CERT`, `GNMI_TLS_KEY` | gNMI server, see [gNMI](#gnmi) |
+| `NETCONF_TIMEOUT` | Seconds a NETCONF request may take, backends included (default 120) |
+| `CRASH_LOOP_MAX`, `CRASH_LOOP_WINDOW` | Supervision: a critical daemon restarted more than `CRASH_LOOP_MAX` times (5) in `CRASH_LOOP_WINDOW` seconds (120) stops the container |
 | `SSH_PORT`, `NETCONF_PORT`, `LOG_LEVEL`, `YANG_DIR` | Runtime parameters |
 
 ## Routing over NETCONF
@@ -364,6 +366,26 @@ vrfexec mgmt nslookup example.com
 vrfexec mgmt curl -sI https://example.com
 ```
 
+## Day-2 operations and resilience
+
+Two campaigns run against a repeatable lab: one spine, two leaves, two hosts, a TACACS+ server and a syslog collector, in plain Docker (`tests/lab/lab.sh`, wired like containerlab, with links attached after boot).
+
+```bash
+tests/lab/lab.sh up matt13290/tarvos:latest && tests/lab/lab.sh configure   # lab only
+tests/day2/run.sh matt13290/tarvos:latest            # day-2 campaign (~25 min), --short in CI
+tests/chaos/run.sh matt13290/tarvos:latest           # chaos suite (~40 min); CHAOS_SEED=<n> replays a run
+```
+
+Both need Docker, Python with `ncclient`, `sshpass` and `gnmic`, and the `vrf` and `vxlan` kernel modules. Each writes a Markdown and JSON report to `tests/day2/report/` or `tests/chaos/report/`. The chaos suite also runs nightly and on demand in GitHub Actions (workflow `chaos`).
+
+What an operator can rely on (each point is a test of the campaigns):
+
+- **Datastores:** `<edit-config>` merge, replace, create, delete and remove; `<copy-config>`, `<delete-config>`, `<validate>`; `candidate` with `<commit>`, `<discard-changes>` and confirmed commit (an unconfirmed commit rolls back FRR and the kernel as well); `<lock>`, with the lock of a dead session released at once.
+- **Persistence:** after `<copy-config>` to startup, `docker restart` re-applies everything (FRR, VRF/VXLAN devices, QoS, CoPP, AAA, LLDP). Unsaved changes are gone after a restart, and running is then equal to startup.
+- **Refusals are clean:** an edit refused by FRR or a backend changes nothing, and its `<rpc-error>` carries FRR's message (for example "BGP instance is already running; AS is 65000"). A VRF that VNIs still use cannot be deleted.
+- **Self-healing:** every daemon is supervised and restarted. Tarvos-owned kernel objects (VRF/VXLAN devices, isolation routes, the management default route, QoS qdiscs) are restored within 10 s if removed behind Tarvos' back.
+- **Concurrency and scale:** 20 parallel NETCONF sessions with SSH and gNMI at the same time; 500 prefix-list entries, 200 route-map entries, 50 neighbours or 100 VNIs in one edit; no memory growth over 1000 commits.
+
 ## Security notes
 
 - **Change `ADMIN_PASSWORD`.** The default `admin`/`admin` is public knowledge. The container logs a warning while it is in use. Do not expose port 22/830 of a default container to untrusted networks.
@@ -374,13 +396,17 @@ vrfexec mgmt curl -sI https://example.com
 
 ## Upgrading from 2.1.0
 
-2.1.1 is a hardening release: existing `.env` files and NETCONF configurations keep working, and no action is required. Behaviour that changes:
+2.1.1 is a hardening release: existing `.env` files and NETCONF configurations keep working, and no action is required beyond the TACACS+ note below. Behaviour that changes:
 
 - **VXLAN MTU:** `vx<vni>`/`br<vni>` get MTU 1450 when `tarvos-vxlan` `mtu` is unset (was 1500, which silently dropped packets of more than 1450 bytes on a 1500-byte underlay). Set `mtu` if your underlay is larger.
 - **Tenant VRF isolation:** every Tarvos VRF table gets an `unreachable default` at the highest metric. Before, traffic forwarded from a tenant port to an address the VRF had no route for could leave through the management interface.
 - **QoS:** the htb root class is now `1:ffff`, so class id 1 works. A refused or failed QoS edit no longer leaves a qdisc on the interface. Counters restart from zero once, at the first application.
 - **LLDP:** the system name is the container hostname (it was `tarvos` on every node). `LLDP_SYSTEM_NAME` still overrides it.
 - **Management VRF:** if the management default route disappears (Docker moves the gateway when a network is connected after boot), it is restored within 10 s.
+- **TACACS+ with several servers (security fix):** 2.1.0 gave the shared secret to the last server only (`pam_tacplus` semantics). Requests to the other servers, including the primary, went out unobfuscated (PAP password readable on the wire), and every login fell through to the last server. Each server now gets its own `secret=`. If you ran 2.1.0 with more than one server in `TACACS_SERVER`, consider rotating the TACACS+ passwords.
+- **`TACACS_NETCONF_ACCESS=none`** refuses TACACS+ users at login on NETCONF and gNMI. Before, NETCONF opened a session that saw no data. SSH shell access is unchanged.
+- **Supervision:** a daemon that exits is restarted. Before, the telemetry agent and the LLDP, VRF/VXLAN and kernel backends stayed down, and a critical daemon exiting stopped the container. A crash loop of a critical daemon still stops the container.
+- **Large edits:** NETCONF requests may take up to `NETCONF_TIMEOUT` (120 s, Sysrepo's default was 5 s), and the VRF/VXLAN backend batches its kernel commands, so removing 100 VNIs in one edit works.
 - **Toolbox:** `ping`, `traceroute`, `mtr`, `dig`, `tcpdump`, `curl`, `nc`, `iperf3`, ... and `vrfexec`, see [Troubleshooting](#troubleshooting).
 
 ## Upgrading from 2.0
@@ -402,7 +428,11 @@ vrfexec mgmt curl -sI https://example.com
 
 ## Known limitations
 
-- Remote syslog forwarding is unit-tested but not yet tested against a real collector; `sysrepo-plugind` and `netopeer2-server` log to stdout only.
+- Syslog over UDP (the default) loses what is sent while the collector is unreachable; `SYSLOG_PROTOCOL=tcp` queues it and delivers it when the collector is back (both tested by the day-2 campaign). `sysrepo-plugind` and `netopeer2-server` log to stdout only.
+- With several Docker networks, `docker restart` may give the interfaces other names (eth0 and eth1 swapped). The configuration then points at the wrong ports, and the management VRF takes the wrong interface (Tarvos logs a warning when the default route is not on `MGMT_INTERFACE`). Pin the names with Docker 28's endpoint option: `docker run --network name=mgmt,driver-opt=com.docker.network.endpoint.ifname=eth0` and `docker network connect --driver-opt com.docker.network.endpoint.ifname=eth1 ...`, as `tests/lab/lab.sh` does. containerlab and GNS3 name the links themselves.
+- NETCONF configuration lives in the container: `<copy-config>` to startup survives `docker restart`, not a new container (image upgrade, `docker rm`). Re-push the configuration (a controller, or `<get-config>` before and `<edit-config>` after); the day-2 campaign does this from a v2.0.0 node.
+- TACACS+ is consulted at login: removing a user on the server does not close the user's open sessions (`pkill -u tacacs` does). With every server down, a TACACS+ login waits `TACACS_TIMEOUT` per server before failing; `admin` never waits.
+- Not modelled yet (refused, never accepted and ignored): ESI multihoming (EVPN route types 1 and 4), IPv6 VTEP addresses, VLAN-aware bridges, CoPP matches beyond protocol/port/source; see [docs/yang-gaps.md](docs/yang-gaps.md) for the full audit.
 - Netopeer2 advertises the `yang-library` capability and serves modules via `<get-schema>`; it does not list every module in its `<hello>`.
 - OSPF and IS-IS adjacency state is not modelled yet: use `vtysh` (`show ip ospf neighbor`, `show isis neighbor`).
 - The vtysh-rendered FRR models support the common nodes; anything Tarvos cannot render yet (for example cisco-style access lists, BFD authentication, some route-map actions) is refused with an explicit error, never silently dropped.
@@ -410,4 +440,4 @@ vrfexec mgmt curl -sI https://example.com
 
 ## Development
 
-`feature` -> PR to `qa` (lint, unit tests, build, Trivy, integration tests incl. TACACS+ and a two-leaf BGP EVPN lab, baseline metrics) -> PR to `main` (same checks, then push to Docker Hub as `matt13290/tarvos` with tags `latest`, `vX.Y.Z` from `VERSION`, and the commit SHA). Bump `VERSION` for every merge to `main`.
+`feature` -> PR to `qa` (lint, unit tests, build, Trivy, integration tests incl. TACACS+, the troubleshooting toolbox, a two-leaf BGP EVPN lab and the short day-2 campaign, baseline metrics) -> PR to `main` (same checks, then push to Docker Hub as `matt13290/tarvos` with tags `latest`, `vX.Y.Z` from `VERSION`, and the commit SHA). Bump `VERSION` for every merge to `main`.

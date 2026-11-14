@@ -5,6 +5,12 @@ Supports PAP and ASCII login authentication, authorization (always PASS_ADD for 
 users) and accounting (always SUCCESS). Not for production use.
 
 Usage: tacacs_server.py --key KEY [--port 49] --user NAME:PASSWORD [--user ...]
+                        [--users-file FILE] [--delay SECONDS] [--hang]
+
+--users-file: NAME:PASSWORD lines, re-read on every request (remove a user while the
+test runs); --delay: wait before every reply (slow server); --hang: accept connections
+and never answer (dead server that still completes the TCP handshake). Every
+authentication is logged on stderr as "auth NAME ok|fail".
 """
 
 import argparse
@@ -12,6 +18,8 @@ import hashlib
 import socketserver
 import struct
 import sys
+import time
+from pathlib import Path
 
 HEADER = struct.Struct("!BBBBII")  # version, type, seq_no, flags, session_id, length
 AUTHEN, AUTHOR, ACCT = 1, 2, 3
@@ -45,6 +53,9 @@ def authen_reply(status: int, message: bytes = b"") -> bytes:
 class Handler(socketserver.BaseRequestHandler):
     users: dict[str, str]
     key: bytes
+    users_file: str | None = None
+    delay: float = 0.0
+    hang: bool = False
 
     def recv_exact(self, size: int) -> bytes:
         data = b""
@@ -62,6 +73,9 @@ class Handler(socketserver.BaseRequestHandler):
 
     def handle(self) -> None:
         pending_user = None
+        if self.hang:
+            time.sleep(3600)
+            return
         try:
             while True:
                 version, kind, seq, flags, session_id, length = HEADER.unpack(
@@ -70,6 +84,8 @@ class Handler(socketserver.BaseRequestHandler):
                 raw = self.recv_exact(length)
                 body = raw if flags & 0x01 else crypt(self.key, session_id, version, seq, raw)
                 reply_seq = seq + 1
+                if self.delay:
+                    time.sleep(self.delay)
                 if kind == AUTHEN:
                     pending_user, reply = self.authen(body, seq, pending_user)
                     self.send(version, kind, reply_seq, session_id, reply)
@@ -83,7 +99,16 @@ class Handler(socketserver.BaseRequestHandler):
             return
 
     def check(self, user: str, password: str) -> bool:
-        return self.users.get(user) == password and bool(password)
+        users = dict(self.users)
+        if self.users_file:
+            try:
+                lines = Path(self.users_file).read_text().splitlines()
+                users.update(line.split(":", 1) for line in lines if ":" in line)
+            except OSError:
+                pass
+        ok = users.get(user) == password and bool(password)
+        print(f"auth {user} {'ok' if ok else 'fail'}", file=sys.stderr, flush=True)
+        return ok
 
     def authen(self, body: bytes, seq: int, pending_user: str | None) -> tuple[str | None, bytes]:
         if seq == 1:  # START
@@ -109,9 +134,13 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=49)
     parser.add_argument("--host", default="0.0.0.0")  # noqa: S104 - test fixture
     parser.add_argument("--user", action="append", default=[], help="NAME:PASSWORD")
+    parser.add_argument("--users-file")
+    parser.add_argument("--delay", type=float, default=0.0)
+    parser.add_argument("--hang", action="store_true")
     args = parser.parse_args()
     Handler.key = args.key.encode()
     Handler.users = dict(u.split(":", 1) for u in args.user)
+    Handler.users_file, Handler.delay, Handler.hang = args.users_file, args.delay, args.hang
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     with socketserver.ThreadingTCPServer((args.host, args.port), Handler) as server:
         print(f"tacacs test server on {args.host}:{args.port}", file=sys.stderr, flush=True)
