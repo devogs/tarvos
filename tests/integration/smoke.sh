@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Container smoke test: SSH login, NETCONF <hello> with tarvos-* modules, FRR health.
+# Container smoke test: SSH login, NETCONF <hello> with tarvos-* modules, FRR health,
+# eBPF telemetry agent.
 # Usage: tests/integration/smoke.sh <image>
 # Writes metrics.env (BOOT_SECONDS, MEM_USAGE) in the current directory.
 set -euo pipefail
@@ -20,7 +21,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 start=$(date +%s)
 docker run -d --name "${NAME}" \
-    --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN \
+    --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
     --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
     -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" \
     -e "FRR_DAEMONS=[zebra, bgpd]" \
@@ -101,6 +102,13 @@ for _ in $(seq 1 10); do
 done
 docker exec "${NAME}" lldpcli show running-configuration | grep -Eq 'Transmit delay:[[:space:]]+30$' ||
     fail "lldpd did not return to the bootstrap tx-interval"
+
+echo "== eBPF telemetry agent: eth0 instrumented, SSH/NETCONF packets classified"
+snapshot="$(docker exec "${NAME}" tarvos-telemetry snapshot)" || {
+    docker logs "${NAME}" 2>&1 | grep telemetry >&2
+    fail "telemetry agent not serving"
+}
+python3 "$(dirname "$0")/telemetry_check.py" smoke "${snapshot}" || fail "unexpected telemetry snapshot"
 
 mem="$(docker stats --no-stream --format '{{.MemUsage}}' "${NAME}" | awk '{print $1}')"
 printf 'BOOT_SECONDS=%s\nMEM_USAGE=%s\n' "${boot_seconds}" "${mem}" >metrics.env

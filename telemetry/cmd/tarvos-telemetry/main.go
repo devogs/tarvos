@@ -1,0 +1,122 @@
+// tarvos-telemetry: the Tarvos kernel telemetry agent.
+//
+//	tarvos-telemetry run       load the eBPF programs, instrument every interface and
+//	                           serve the counters on the local socket
+//	tarvos-telemetry snapshot  print the counters of the running agent (JSON)
+//
+// Configuration comes from the environment (see .env.example): TELEMETRY_EXCLUDE,
+// TELEMETRY_SYNC_INTERVAL, TELEMETRY_SOCKET.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/devogs/tarvos/telemetry/internal/agent"
+	"github.com/devogs/tarvos/telemetry/internal/api"
+)
+
+var version = "dev"
+
+func env(name, fallback string) string {
+	if v, ok := os.LookupEnv(name); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	return fallback
+}
+
+// splitList accepts "a,b c" and "[a, b]".
+func splitList(raw string) []string {
+	raw = strings.Trim(strings.TrimSpace(raw), "[]")
+	var out []string
+	for _, item := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if item = strings.Trim(item, `"'`); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func seconds(name string, fallback int) time.Duration {
+	n, err := strconv.Atoi(env(name, strconv.Itoa(fallback)))
+	if err != nil || n < 1 || n > 3600 {
+		log.Printf("WARNING: %s must be 1-3600 seconds; using %d", name, fallback)
+		n = fallback
+	}
+	return time.Duration(n) * time.Second
+}
+
+func run() error {
+	exclude := splitList(env("TELEMETRY_EXCLUDE", "lo"))
+	a, err := agent.New(agent.Config{Exclude: exclude})
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	if err := a.Sync(); err != nil {
+		return err
+	}
+	interval := seconds("TELEMETRY_SYNC_INTERVAL", 5)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := a.Sync(); err != nil {
+					log.Printf("ERROR: %v", err)
+				}
+			}
+		}
+	}()
+	socket := env("TELEMETRY_SOCKET", api.DefaultSocket)
+	log.Printf("serving counters on %s (version %s)", socket, version)
+	return api.Serve(ctx, socket, a)
+}
+
+func snapshot() error {
+	snap, err := api.Fetch(env("TELEMETRY_SOCKET", api.DefaultSocket))
+	if err != nil {
+		return err
+	}
+	out := json.NewEncoder(os.Stdout)
+	out.SetIndent("", "  ")
+	return out.Encode(snap)
+}
+
+func main() {
+	log.SetFlags(0)
+	log.SetPrefix("[telemetry] ")
+	command := "run"
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+	var err error
+	switch command {
+	case "run":
+		err = run()
+	case "snapshot":
+		err = snapshot()
+	case "version":
+		fmt.Println(version)
+	default:
+		err = fmt.Errorf("usage: tarvos-telemetry run|snapshot|version")
+	}
+	if err != nil {
+		log.Printf("FATAL: %v", err)
+		os.Exit(1)
+	}
+}

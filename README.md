@@ -24,8 +24,9 @@ Debian trixie-slim + FRRouting 10.7.1 (official packages, mgmtd) + Sysrepo/Netop
 - **Discovery:** LLDP (lldpd) advertises the node. Manage it and read discovered neighbours over NETCONF with the `tarvos-lldp` module, or use `lldpcli show neighbors`.
 - **Isolated management plane:** `eth0` lives in VRF `mgmt` by default.
 - **Observability:** operational state over NETCONF for every model (BGP sessions, EVPN VNIs and routes, VRF/VXLAN devices, PIM/LDP/VRRP/BFD sessions, tc and CoPP counters, TACACS+ reachability), rsyslog to stdout with optional forwarding to remote collectors.
+- **eBPF telemetry:** per-interface traffic, packet sizes and drops by reason, per-VNI VXLAN counters and control-plane packet counters, collected in the kernel.
 - **QoS and CoPP over NETCONF:** tc shaping and DSCP classes (`tarvos-qos`), nftables control-plane policing (`tarvos-nftables`).
-- **Small and fast:** about 100 MB compressed, boots in under 10 s, about 105 MiB of RAM with bgpd (FRR 10.7 always runs mgmtd, zebra and staticd).
+- **Small and fast:** about 100 MB compressed, boots in under 10 s, about 115 MiB of RAM with bgpd and telemetry (FRR 10.7 always runs mgmtd, zebra and staticd).
 
 ## Get the image
 
@@ -146,6 +147,21 @@ One backend process (`kernel_sync`) applies `tarvos-qos`, `tarvos-nftables` and 
 - **`tarvos-qos` (tc):** Tarvos owns the root qdisc of every interface it lists and rebuilds it when the policy changes or the interface reappears. `htb` shapes to `bandwidth` with one htb class per configured class (`1:<id in hex>`, fq_codel leaf); unclassified traffic goes to a default class `1:fff` that gets the leftover bandwidth. `prio` uses eight bands (class priority 0-7 -> band 1-8). DSCP values are matched on the IPv4 DS field and the IPv6 traffic class. Over-subscribed rates, a rate above its ceil and a DSCP in two classes are refused. Removing an interface restores the kernel default qdisc. Interfaces that do not exist yet are applied when they appear (re-checked every `QOS_REAPPLY_INTERVAL` s).
 - **`tarvos-nftables` (CoPP):** rules go into a table owned by Tarvos, `inet tarvos` (chain `copp`, input hook, policy accept), replaced as a whole in one `nft` transaction (counters restart at zero). A `rate-limit` rule drops the excess over `max-pps` and accepts the rest. Other nftables tables are never touched.
 - **`tarvos-aaa` (PAM):** servers configured over NETCONF replace `TACACS_SERVER`/`TACACS_SECRET` (each server with its own secret) for the next SSH/NETCONF login; removing them restores the environment. `local-fallback/enabled false` rejects the `admin` login, and is itself refused while no TACACS+ server is configured.
+
+## eBPF telemetry
+
+`tarvos-telemetry` (Go, [cilium/ebpf](https://github.com/cilium/ebpf); eBPF programs in `telemetry/bpf/`, GPL) is the single owner of the eBPF programs and maps. It instruments every interface of the container (TCX, or a `clsact` qdisc on kernels older than 6.6) and re-checks for new interfaces every `TELEMETRY_SYNC_INTERVAL` seconds, since containerlab and GNS3 attach links after boot.
+
+| Counter | Labels | Source |
+|---|---|---|
+| rx/tx packets and bytes, packet-size histogram (<=64, 128, 256, 512, 1024, 1518, 9216, larger) | interface, direction | tc/TCX ingress and egress |
+| Drops, by kernel drop reason (`no_socket`, `netfilter_drop`, `ipv6disabled`, ...) | interface, reason | `tp_btf/kfree_skb`, filtered to the container's network namespace |
+| VXLAN rx/tx packets and bytes, drops | vni (and its `vx<vni>` device) | counters of the VXLAN device |
+| Control-plane packets and bytes: BGP, BFD, LDP, OSPF, IS-IS, VRRP, PIM, LLDP, VXLAN (outer), SSH, NETCONF, TACACS+, gNMI, Prometheus | interface, protocol, direction | header parsing in the tc programs |
+
+Other components read the counters only through the agent, never from the maps. The Prometheus exporter and gNMI server run in the agent process. Everything else uses the root-only socket `/run/tarvos/telemetry.sock` (`GET /v1/snapshot`, JSON). Try `docker exec <node> tarvos-telemetry snapshot`.
+
+Requirements: a kernel with BTF (`/sys/kernel/btf/vmlinux`, standard on current distributions) and `CAP_SYS_ADMIN`, which Tarvos already needs for FRR (or `CAP_BPF` + `CAP_PERFMON`, both listed in `docker-compose.yml`). GNS3 and containerlab run nodes privileged. Without drop tracing (no BTF or no `CAP_PERFMON`), the agent logs why and keeps the traffic counters. If it cannot load at all, the node keeps working without telemetry. `TELEMETRY_ENABLED=no` turns it off.
 
 ## LLDP over NETCONF
 

@@ -2,7 +2,7 @@
 # Tarvos container entrypoint (runs under tini as PID 1).
 # Boot order: AAA -> sshd -> YANG registration -> sysrepo-plugind -> netopeer2
 #             -> LLDP -> FRR -> Python backend daemons (netdev, FRR, LLDP, AAA, QoS,
-#             nftables).
+#             nftables) -> eBPF telemetry agent.
 # All configuration comes from the environment (see .env.example).
 set -uo pipefail
 
@@ -119,6 +119,12 @@ fi
 # (tarvos-aaa), tc QoS (tarvos-qos), nftables CoPP (tarvos-nftables). A backend whose
 # module is not installed is skipped.
 start kernel_sync python3 "${DAEMONS_DIR}/kernel_sync.py"
+# eBPF telemetry agent (counters for the Prometheus and gNMI exporters). Not critical:
+# without CAP_BPF/CAP_PERFMON or kernel BTF it logs why and the node keeps working.
+case "${TELEMETRY_ENABLED:-yes}" in
+    yes | true | 1) start telemetry /usr/local/bin/tarvos-telemetry run ;;
+    *) log "telemetry disabled (TELEMETRY_ENABLED=${TELEMETRY_ENABLED})" ;;
+esac
 # Optional user-selected daemons
 for daemon in ${TARVOS_DAEMONS:-}; do
     case "${daemon}" in
