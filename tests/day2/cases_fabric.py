@@ -79,6 +79,9 @@ def reboot(lab: Lab, r: Recorder, node: str, peers: int) -> None:
             r.check(f"{node} back in the fabric, traffic restored", False, str(exc))
         r.measure("h1 -> h2 outage", f"{ping.lost_seconds():.0f} s")
     other = "leaf1" if node != "leaf1" else "leaf2"
+    # MAC+IP type-2 routes come back once the hosts talk to their gateway again (README)
+    for host in ("h1", "h2"):
+        lab.x(host, "ping -c2 -W1 10.1.100.1", check=False)
     try:
         wait("EVPN routes restored", lambda: all(evpn_counts_vtysh(lab, other).get(t, 0) >= before.get(t, 0) for t in (2, 3, 5)),
              timeout=60)  # fmt: skip
