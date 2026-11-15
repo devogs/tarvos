@@ -27,6 +27,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from tarvos_common import log as _log
+from tarvos_common import operator_message
 
 IN_FLIGHT_TIMEOUT = 120.0  # a lost "done" event must not stop periodic re-application
 
@@ -86,6 +87,12 @@ class Runner:
                 self.log(f"refused: {exc}")
                 self.restore(read_running)
                 raise
+            except Exception as exc:
+                # Not a validation error (I/O error, tc/nft crash, ...): the change may be
+                # partly applied, so restore as well and refuse with a clear message.
+                self.log(f"refused (internal error): {exc!r}")
+                self.restore(read_running)
+                raise BackendError(f"{self.backend.name}: could not apply: {exc}") from exc
             self.log("configuration applied")
         elif event == "abort":
             self.log("transaction aborted, restoring the running configuration")
@@ -143,7 +150,7 @@ def _subscribe(connection: Any, session: Any, runner: Runner) -> bool:
         try:
             runner.on_change(event, lambda: _read(event_session, backend.xpath), read_running)
         except BackendError as exc:
-            error = SysrepoCallbackFailedError(str(exc))
+            error = SysrepoCallbackFailedError(operator_message(str(exc)))
             event_session.set_error(error)
             raise error from exc
 

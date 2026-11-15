@@ -1,0 +1,49 @@
+{
+  "tarvos-qos:qos": {
+    "interface": [
+      {
+        "name": "eth1", "qdisc": "htb", "bandwidth": "10000",
+        "class": [
+          {"id": 10, "dscp": [46], "state": {"packets": "100", "bytes": "15000", "drops": "0", "overlimits": "3"}},
+          {"id": 20, "dscp": [10], "state": {"packets": "60", "bytes": "9000", "drops": "2", "overlimits": "0"}}
+        ],
+        "state": {
+          "oper-status": "present",
+          "root-qdisc": {"kind": "htb", "packets": "170", "bytes": "25000", "drops": "2", "overlimits": "3"},
+          "default-class": {"packets": "10", "bytes": "1000", "drops": "0", "overlimits": "0"}
+        }
+      }
+    ]
+  },
+  "tarvos-nftables:nftables": {
+    "copp": {
+      "rule": [
+        {"name": "icmp", "protocol": "icmp", "action": "rate-limit", "max-pps": 5,
+         "state": {"matched-packets": "200", "matched-bytes": "16800", "dropped-packets": "195", "dropped-bytes": "16380"}}
+      ],
+      "state": {"active": true, "rule-count": 1}
+    }
+  },
+  "tarvos-aaa:aaa": {
+    "state": {
+      "tacacs-active": true,
+      "server": [
+        {"address": "192.0.2.10", "priority": 1, "reachable": false},
+        {"address": "192.0.2.11", "priority": 2, "reachable": true, "response-time": 4}
+      ],
+      "authentication-count": [
+        {"method": "tacacs", "result": "success", "count": "7"},
+        {"method": "local", "result": "failure", "count": "2"}
+      ]
+    }
+  },
+  "tarvos-lldp:lldp": {
+    "neighbors": {
+      "neighbor": [
+        {"interface": "eth1", "chassis-id": "a", "port-id": "x"},
+        {"interface": "eth1", "chassis-id": "b", "port-id": "y"},
+        {"interface": "eth2", "chassis-id": "c", "port-id": "z"}
+      ]
+    }
+  }
+}

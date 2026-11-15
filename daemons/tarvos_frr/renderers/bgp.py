@@ -30,11 +30,24 @@ AF_CLI = {
 }
 
 
+def _local_as(peer_id: str, cfg: dict[str, Any]) -> list[str]:
+    local = cfg.get("local-as")
+    if not local:
+        return []
+    line = f"neighbor {peer_id} local-as {local['asn']}"
+    if local.get("no-prepend"):
+        line += " no-prepend"
+        if local.get("replace-as"):
+            line += " replace-as"
+    return [line]
+
+
 def _peer_lines(peer_id: str, cfg: dict[str, Any], with_remote_as: bool) -> list[str]:
     n = f"neighbor {peer_id}"
     lines: list[str] = []
     if with_remote_as and cfg.get("remote-as") is not None:
         lines.append(f"{n} remote-as {cfg['remote-as']}")
+        lines += _local_as(peer_id, cfg)
     if cfg.get("description"):
         lines.append(f"{n} description {cfg['description']}")
     if cfg.get("update-source"):
@@ -72,6 +85,8 @@ def _peer_af_lines(peer_id: str, af: dict[str, Any]) -> list[str]:
     if af.get("maximum-prefix") is not None:
         lines.append(f"{n} maximum-prefix {af['maximum-prefix']}")
     lines += flag(af.get("default-originate"), f"{n} default-originate")
+    lines += flag(af.get("remove-private-as"), f"{n} remove-private-AS")
+    lines += flag(af.get("as-override"), f"{n} as-override")
     return lines
 
 
@@ -154,6 +169,7 @@ def _neighbor_header(neighbor: dict[str, Any]) -> list[str]:
             lines.append(f"neighbor {address} remote-as {remote_as}")
         return lines
     lines = [f"neighbor {address} remote-as {remote_as}"] if remote_as is not None else []
+    lines += _local_as(address, neighbor)
     if group:
         lines.append(f"neighbor {address} peer-group {group}")
     return lines
@@ -168,6 +184,9 @@ def _instance(inst: dict[str, Any]) -> Block:
     body += bool_line(inst.get("log-neighbor-changes"), "bgp log-neighbor-changes")
     body += bool_line(inst.get("ebgp-requires-policy"), "bgp ebgp-requires-policy")
     body += bool_line(inst.get("default-ipv4-unicast"), "bgp default ipv4-unicast")
+    if inst.get("cluster-id"):
+        body.append(f"bgp cluster-id {inst['cluster-id']}")
+    body += flag(inst.get("graceful-restart"), "bgp graceful-restart")
     body += bool_line(inst.get("bestpath-multipath-relax"), "bgp bestpath as-path multipath-relax")
     if inst.get("timers"):
         body.append(f"timers bgp {inst['timers']['keepalive']} {inst['timers']['hold-time']}")
@@ -181,6 +200,10 @@ def _instance(inst: dict[str, Any]) -> Block:
         body += _neighbor_header(neighbor)
         body += _peer_lines(neighbor["address"], neighbor, with_remote_as=False)
         peers.append((neighbor["address"], neighbor))
+    if inst.get("listen-limit") is not None:
+        body.append(f"bgp listen limit {inst['listen-limit']}")
+    for listen in items(inst, "listen-range"):
+        body.append(f"bgp listen range {listen['prefix']} peer-group {listen['peer-group']}")
 
     for af_name, af_cli in AF_CLI.items():
         peer_lines = [

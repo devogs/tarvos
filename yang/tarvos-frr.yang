@@ -192,13 +192,13 @@ module tarvos-frr {
             type uint32;
             units "seconds";
             description
-              "Time since the neighbour was discovered.";
+              "Time since the neighbour was discovered (seconds).";
           }
           leaf holdtime-remaining {
             type uint32;
             units "seconds";
             description
-              "Time left before the neighbour expires.";
+              "Time left before the neighbour expires (seconds).";
           }
           leaf dr-priority {
             type uint32;
@@ -244,7 +244,7 @@ module tarvos-frr {
             type uint32;
             units "seconds";
             description
-              "Time since the session reached its state.";
+              "Time since the session reached its state (seconds).";
           }
         }
       }
@@ -402,13 +402,13 @@ module tarvos-frr {
             type uint32;
             units "seconds";
             description
-              "Time since the session came up.";
+              "Time since the session came up (seconds).";
           }
           leaf downtime {
             type uint32;
             units "seconds";
             description
-              "Time since the session went down.";
+              "Time since the session went down (seconds).";
           }
           leaf diagnostic {
             type string;
@@ -424,13 +424,13 @@ module tarvos-frr {
             type uint32;
             units "milliseconds";
             description
-              "Configured minimum receive interval.";
+              "Configured minimum receive interval (milliseconds).";
           }
           leaf transmit-interval {
             type uint32;
             units "milliseconds";
             description
-              "Configured minimum transmit interval.";
+              "Configured minimum transmit interval (milliseconds).";
           }
           leaf detect-multiplier {
             type uint8;

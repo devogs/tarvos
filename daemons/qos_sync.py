@@ -4,17 +4,22 @@
 Each configured interface gets a root qdisc owned by Tarvos (handle 1:), rebuilt from
 scratch when its configuration changes (or when the interface reappears):
 
-* htb: root class 1:1 at ``bandwidth``; one class 1:<id in hex> per configured class
-  (rate, ceil, prio) with an fq_codel leaf; a default class 1:fff (priority 7) takes
-  the unclassified traffic and the bandwidth left over. DSCP values are matched by u32
+* htb: root class 1:ffff at ``bandwidth`` (outside the class id range 1-4094, so every
+  id the model allows is usable); one class 1:<id in hex> per configured class (rate,
+  ceil, prio) with an fq_codel leaf; a default class 1:fff (priority 7) takes the
+  unclassified traffic and the bandwidth left over. DSCP values are matched by u32
   filters on the IPv4 DS field and the IPv6 traffic class.
 * prio: eight bands (1:1..1:8); a class goes to band ``priority + 1``, unclassified
   traffic to band 5 (priority 4, the default).
 * fq-codel, cake: a single root qdisc (cake shaped at ``bandwidth`` when set).
 
 Interfaces removed from the configuration get their root qdisc deleted (back to the
-kernel default). Interfaces that do not exist are skipped and picked up by the periodic
-re-application. tc, qdisc and class counters are served as operational data.
+kernel default). Nothing is left half-applied: a build that fails part-way removes the
+root qdisc it started, and the interfaces where Tarvos installed a root qdisc are
+recorded in OWNED_FILE, so a root qdisc that no configuration backs (refused edit,
+daemon killed mid-build and restarted) is removed by the next application. Interfaces
+that do not exist are skipped and picked up by the periodic re-application. tc, qdisc
+and class counters are served as operational data.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ from tarvos_common import log as _log  # noqa: E402
 
 MODULE = "tarvos-qos"
 DEFAULT_CLASS = 0xFFF
+ROOT_CLASS = 0xFFFF  # htb parent of all classes; ids 1-4094 never collide with it
+OWNED_FILE = os.environ.get("QOS_OWNED_FILE", "/run/tarvos/qos-owned.json")
 MIN_RATE = 8  # kbit/s, tc's lower bound in the model
 PRIO_BANDS = 8
 PRIO_DEFAULT_BAND = 4  # 0-based band of priority 4 (classid 1:5)
@@ -123,7 +130,7 @@ def build(interface: dict[str, Any]) -> list[list[str]]:
         )
     commands = [
         [*qdisc, "root", "handle", "1:", "htb", "default", f"{DEFAULT_CLASS:x}"],
-        ["tc", "class", "add", "dev", dev, "parent", "1:", "classid", "1:1",
+        ["tc", "class", "add", "dev", dev, "parent", "1:", "classid", classid(ROOT_CLASS),
          "htb", "rate", f"{bandwidth}kbit", "ceil", f"{bandwidth}kbit"],
     ]  # fmt: skip
     leaves = [
@@ -137,7 +144,8 @@ def build(interface: dict[str, Any]) -> list[list[str]]:
         if ceil > bandwidth:
             raise BackendError(f"{dev}: class {minor} ceil {ceil} is above the bandwidth")
         commands.append(
-            ["tc", "class", "add", "dev", dev, "parent", "1:1", "classid", classid(minor),
+            ["tc", "class", "add", "dev", dev, "parent", classid(ROOT_CLASS),
+             "classid", classid(minor),
              "htb", "rate", f"{rate}kbit", "ceil", f"{ceil}kbit", "prio", str(prio)]
         )  # fmt: skip
         commands.append([*qdisc, "parent", classid(minor), "fq_codel"])
@@ -155,6 +163,18 @@ def run(command: list[str], check: bool = True) -> subprocess.CompletedProcess[s
 
 def tc_json(*args: str) -> list[dict[str, Any]]:
     return json.loads(run(["tc", "-s", "-j", *args]).stdout or "[]")
+
+
+TC_KIND = {"htb": "htb", "prio": "prio", "fq-codel": "fq_codel", "cake": "cake"}
+
+
+def root_kind(dev: str) -> str | None:
+    """Kind of the root qdisc of ``dev`` (None if it cannot be read)."""
+    try:
+        qdiscs = tc_json("qdisc", "show", "dev", dev, "root")
+    except BackendError:
+        return None
+    return next((str(q.get("kind")) for q in qdiscs if q.get("root")), None)
 
 
 def ifindexes() -> dict[str, int]:
@@ -202,23 +222,58 @@ class QosBackend:
     name = "qos-sync"
     interval: float | None = INTERVAL
 
-    def __init__(self) -> None:
+    def __init__(self, owned_file: str = OWNED_FILE) -> None:
         # interface -> (configuration it was built from, ifindex it was built on)
         self.applied: dict[str, tuple[str, int]] = {}
         self.missing: set[str] = set()  # configured interfaces that do not exist
+        # Interfaces whose root qdisc Tarvos installed (persisted: survives a restart of
+        # this daemon, not of the container, whose interfaces are new anyway).
+        self.owned_file = owned_file
+        self.owned: set[str] = self._load_owned()
         self.oper = [
             (f"/{MODULE}:qos/interface/state", self.state),
             (f"/{MODULE}:qos/interface/class/state", self.state),
         ]
 
+    def _load_owned(self) -> set[str]:
+        try:
+            with open(self.owned_file, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return set()
+        return {str(n) for n in data} if isinstance(data, list) else set()
+
+    def _save_owned(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.owned_file) or ".", exist_ok=True)
+            tmp = f"{self.owned_file}.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(sorted(self.owned), handle)
+            os.replace(tmp, self.owned_file)
+        except OSError as exc:
+            log(f"WARNING: cannot record owned qdiscs: {exc}")
+
+    def _own(self, name: str, owned: bool) -> None:
+        if (name in self.owned) != owned:
+            (self.owned.add if owned else self.owned.discard)(name)
+            self._save_owned()
+
+    def _remove(self, name: str, present: dict[str, int]) -> None:
+        if name in present:
+            run(["tc", "qdisc", "del", "dev", name, "root"], check=False)
+        self.applied.pop(name, None)
+        self._own(name, False)
+
     def apply(self, config: dict[str, Any]) -> None:
         present = ifindexes()
         desired = {i["name"]: i for i in _interfaces(config)}
-        for name in sorted(set(self.applied) - set(desired)):
+        # The file is the record of ownership (another instance of this backend, killed
+        # mid-build, may have written it): merge it before deciding what to remove.
+        self.owned |= self._load_owned()
+        for name in sorted((set(self.applied) | self.owned) - set(desired)):
+            self._remove(name, present)
             if name in present:
-                run(["tc", "qdisc", "del", "dev", name, "root"], check=False)
                 log(f"{name}: QoS removed")
-            del self.applied[name]
         for name, interface in sorted(desired.items()):
             if name not in present:
                 self.applied.pop(name, None)
@@ -228,13 +283,20 @@ class QosBackend:
                 continue
             self.missing.discard(name)
             key = (json.dumps(interface, sort_keys=True), present[name])
-            if self.applied.get(name) == key:
-                continue
+            if self.applied.get(name) == key and root_kind(name) == TC_KIND[interface["qdisc"]]:
+                continue  # built and still in place (a "tc qdisc del" behind us rebuilds)
             commands = build(interface)  # validate before touching the interface
             self.applied.pop(name, None)
             run(["tc", "qdisc", "del", "dev", name, "root"], check=False)
-            for command in commands:
-                run(command)
+            self._own(name, True)
+            try:
+                for command in commands:
+                    run(command)
+            except BaseException:
+                # Never leave a partial tree: back to the kernel default. The caller
+                # restores the previous configuration (Runner.restore).
+                self._remove(name, present)
+                raise
             self.applied[name] = key
             log(f"{name}: {interface['qdisc']} applied")
 

@@ -13,10 +13,11 @@ def test_htb_classes_default_class_and_filters():
     ]}))  # fmt: skip
     text = [" ".join(c) for c in commands]
     assert text[0] == "tc qdisc add dev eth1 root handle 1: htb default fff"
-    assert "tc class add dev eth1 parent 1: classid 1:1 htb rate 10000kbit ceil 10000kbit" in text
+    root = "tc class add dev eth1 parent 1: classid 1:ffff htb rate 10000kbit ceil 10000kbit"
+    assert root in text
     # id 10 -> classid 1:a (tc minors are hex)
     assert (
-        "tc class add dev eth1 parent 1:1 classid 1:a htb rate 2000kbit ceil 10000kbit prio 0"
+        "tc class add dev eth1 parent 1:ffff classid 1:a htb rate 2000kbit ceil 10000kbit prio 0"
         in text
     )
     # unset rate: equal share of what is left (8000 / 2 classes incl. the default one)
@@ -80,14 +81,16 @@ def test_interface_state():
     assert interface_state(interface, None, None)["state"] == {"oper-status": "not-present"}
 
 
-def test_apply_rebuilds_only_on_change(monkeypatch):
+def test_apply_rebuilds_only_on_change(monkeypatch, tmp_path):
     import qos_sync
 
     calls = []
     links = {"eth1": 5}
     monkeypatch.setattr(qos_sync, "ifindexes", lambda: dict(links))
     monkeypatch.setattr(qos_sync, "run", lambda command, check=True: calls.append(command))
-    backend = QosBackend()
+    kinds = {"eth1": "fq_codel", "eth9": "fq_codel"}
+    monkeypatch.setattr(qos_sync, "root_kind", lambda dev: kinds.get(dev))
+    backend = QosBackend(owned_file=str(tmp_path / "owned.json"))
     config = {"qos": {"interface": [{"name": "eth1", "qdisc": "fq-codel"},
                                     {"name": "eth9", "qdisc": "fq-codel"}]}}  # fmt: skip
     backend.apply(config)
@@ -108,3 +111,63 @@ def test_apply_rebuilds_only_on_change(monkeypatch):
         ["tc", "qdisc", "del", "dev", "eth1", "root"],
         ["tc", "qdisc", "del", "dev", "eth9", "root"],
     ]
+
+
+def test_class_id_1_does_not_collide_with_the_root_class():
+    # v2.1.0 bug: htb's root class was 1:1, so <class><id>1</id> failed with "File exists"
+    commands = build(htb(**{"class": [{"id": 1, "dscp": [46], "rate": 1000}]}))
+    classids = [c[c.index("classid") + 1] for c in commands if "classid" in c]
+    assert len(classids) == len(set(classids)) == 3  # root, class 1, default
+    assert "1:1" in classids and "1:ffff" in classids
+
+
+def test_failed_build_leaves_no_qdisc_and_orphans_are_removed(monkeypatch, tmp_path):
+    """v2.1.0 bug: a refused edit left an htb root qdisc on the interface."""
+    import qos_sync
+
+    calls = []
+
+    def run(command, check=True):
+        calls.append(command)
+        if command[:3] == ["tc", "class", "add"] and "1:a" in command:
+            raise BackendError("RTNETLINK answers: File exists")
+
+    monkeypatch.setattr(qos_sync, "ifindexes", lambda: {"eth1": 5})
+    monkeypatch.setattr(qos_sync, "run", run)
+    owned = str(tmp_path / "owned.json")
+    backend = QosBackend(owned_file=owned)
+    bad = {"qos": {"interface": [htb(**{"class": [{"id": 10, "rate": 1000}]})]}}
+    with pytest.raises(BackendError):
+        backend.apply(bad)
+    # rolled back to the kernel default at once, nothing recorded as owned
+    assert calls[-1] == ["tc", "qdisc", "del", "dev", "eth1", "root"]
+    assert backend.owned == set() and backend.applied == {}
+
+    # a daemon killed mid-build: the owned file survives, the next application (of a
+    # configuration without eth1) removes the orphaned root qdisc
+    calls.clear()
+    with open(owned, "w") as handle:
+        handle.write('["eth1"]')
+    restarted = QosBackend(owned_file=owned)
+    restarted.apply({})
+    assert calls == [["tc", "qdisc", "del", "dev", "eth1", "root"]]
+    assert restarted.owned == set()
+
+
+def test_qdisc_removed_behind_tarvos_is_rebuilt(monkeypatch, tmp_path):
+    # v2.1.1 chaos finding: "tc qdisc del dev eth1 root" was never repaired
+    import qos_sync
+
+    calls, kind = [], {"eth1": "htb"}
+    monkeypatch.setattr(qos_sync, "ifindexes", lambda: {"eth1": 5})
+    monkeypatch.setattr(qos_sync, "run", lambda command, check=True: calls.append(command))
+    monkeypatch.setattr(qos_sync, "root_kind", lambda dev: kind.get(dev))
+    backend = QosBackend(owned_file=str(tmp_path / "owned.json"))
+    config = {"qos": {"interface": [htb()]}}
+    backend.apply(config)
+    calls.clear()
+    backend.apply(config)
+    assert calls == []  # in place: nothing to do
+    kind["eth1"] = "noqueue"
+    backend.apply(config)
+    assert any(c[:6] == ["tc", "qdisc", "add", "dev", "eth1", "root"] for c in calls)

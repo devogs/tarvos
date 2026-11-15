@@ -1,0 +1,71 @@
+name: chaos
+
+# Resilience suite (tests/chaos): faults against the lab of tests/lab, invariants
+# checked after each one. Manual or nightly, never on every PR (about 40 minutes).
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "CHAOS_SEED to replay (empty: random, printed in the log)"
+        required: false
+        default: ""
+      repeat:
+        description: "Kills during a write, per daemon"
+        required: false
+        default: "20"
+  schedule:
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chaos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  chaos:
+    name: Chaos suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          tags: tarvos:chaos
+          cache-from: type=gha
+
+      - name: Test tooling and kernel modules
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends sshpass
+          pip install --user --break-system-packages --no-cache-dir ncclient==0.6.15
+          curl -fsSL -o /tmp/gnmic.tgz \
+            https://github.com/openconfig/gnmic/releases/download/v0.41.0/gnmic_0.41.0_Linux_x86_64.tar.gz
+          echo "8035b86b8adbe68925f1be46e8b7bf57f6e5c4eda3ca2ec3758b8c23a857d7b1  /tmp/gnmic.tgz" | sha256sum -c -
+          sudo tar -xzf /tmp/gnmic.tgz -C /usr/local/bin gnmic
+          sudo modprobe vrf vxlan || {
+            sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
+            sudo modprobe vrf vxlan
+          }
+          sudo modprobe -a sch_htb sch_netem cls_u32 2>/dev/null || true
+
+      - name: Chaos run
+        env:
+          CHAOS_SEED: ${{ inputs.seed }}
+          CHAOS_REPEAT: ${{ inputs.repeat || '20' }}
+        run: tests/chaos/run.sh tarvos:chaos
+
+      - name: Report
+        if: always()
+        run: |
+          for f in tests/chaos/report/chaos-*.md; do
+            [ -f "$f" ] && cat "$f" >> "$GITHUB_STEP_SUMMARY"
+          done

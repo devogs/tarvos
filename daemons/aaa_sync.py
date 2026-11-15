@@ -68,10 +68,11 @@ def effective(base: AaaSettings, config: dict[str, Any]) -> tuple[AaaSettings, s
             secrets = tuple(validate_secret(s.get("secret")) for s in servers)
         except (ValueError, ConfigError) as exc:
             raise BackendError(f"invalid TACACS+ server: {exc}") from None
-        settings = AaaSettings(addresses, "", timeout, secrets, fallback)
+        settings = AaaSettings(addresses, "", timeout, secrets, fallback, base.netconf_access)
         source = "netconf"
     else:
-        settings = AaaSettings(base.servers, base.secret, timeout, (), fallback)
+        access = base.netconf_access
+        settings = AaaSettings(base.servers, base.secret, timeout, (), fallback, access)
         source = "environment"
     if not settings.local_fallback and not settings.tacacs_enabled:
         raise BackendError(
@@ -104,9 +105,23 @@ def read_events(directory: str) -> dict[str, dict[str, Any]]:
     return events
 
 
+def read_counts(directory: str) -> list[dict[str, Any]]:
+    """counts.json of aaa_event.py -> authentication-count entries (method, result)."""
+    try:
+        counts = json.loads(Path(directory, "counts.json").read_text())
+    except (OSError, ValueError):
+        return []
+    out = []
+    for key, value in sorted(counts.items() if isinstance(counts, dict) else []):
+        method, _, result = str(key).partition(":")
+        if method in METHODS and result in ("success", "failure") and isinstance(value, int):
+            out.append({"method": method, "result": result, "count": value})
+    return out
+
+
 def state(
     settings: AaaSettings, source: str, probes: dict[str, dict[str, Any]],
-    events: dict[str, dict[str, Any]],
+    events: dict[str, dict[str, Any]], counts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:  # fmt: skip
     out: dict[str, Any] = {
         "tacacs-active": settings.tacacs_enabled,
@@ -140,6 +155,8 @@ def state(
         if isinstance(record.get("time"), int):
             last["time"] = _datetime(record["time"])
         out[container] = last
+    if counts:
+        out["authentication-count"] = counts
     return {"aaa": {"state": out}}
 
 
@@ -163,11 +180,17 @@ class AaaBackend:
         settings, source = effective(self.base, config)
         rendered = "".join(render_pam(settings, with_session=w) for w in (True, False))
         if rendered != self.rendered:
+            # Forget what was rendered until the write succeeds: a failed write must not
+            # make the restore that follows believe the files are already current.
+            self.rendered = None
             write_auth_files(settings, self.root)
             self.rendered = rendered
             servers = ", ".join(settings.servers) or "none"
             log(f"TACACS+ servers ({source}): {servers}; local fallback "
                 f"{'on' if settings.local_fallback else 'off'}")  # fmt: skip
+            if not settings.local_fallback:
+                log("WARNING: local fallback disabled: admin logins are denied; if no TACACS+ "
+                    "server answers nobody can log in (recover with docker exec)")  # fmt: skip
         with self.lock:
             self.settings, self.source = settings, source
             self.probes = {a: p for a, p in self.probes.items() if a in settings.servers}
@@ -196,7 +219,7 @@ class AaaBackend:
     def state(self, _config: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             settings, source, probes = self.settings, self.source, dict(self.probes)
-        return state(settings, source, probes, read_events(STATE_DIR))
+        return state(settings, source, probes, read_events(STATE_DIR), read_counts(STATE_DIR))
 
 
 def main() -> int:

@@ -76,16 +76,29 @@ def test_plan_from_scratch_creates_in_dependency_order():
 def test_plan_converged_only_refreshes():
     links = [
         _link("RED", "vrf", ALIAS, table=1010),
-        {**_link("br100", "bridge", ALIAS, "RED"), "address": "00:00:5e:00:01:01"},
-        _link("vx100", "vxlan", ALIAS, "br100", id=100, local="10.255.0.1", port=4789),
-        _link("br5000", "bridge", ALIAS, "RED"),
-        _link("vx5000", "vxlan", ALIAS, "br5000", id=5000, local="10.255.0.1", port=4789),
+        {**_link("br100", "bridge", ALIAS, "RED"), "address": "00:00:5e:00:01:01", "mtu": 1450},
+        {**_link("vx100", "vxlan", ALIAS, "br100", id=100, local="10.255.0.1", port=4789),
+         "mtu": 1450},
+        {**_link("br5000", "bridge", ALIAS, "RED"), "mtu": 1450},
+        {**_link("vx5000", "vxlan", ALIAS, "br5000", id=5000, local="10.255.0.1", port=4789),
+         "mtu": 1450},
         _link("eth2", master="br100"),
         _link("red1", "dummy", master="RED"),
     ]
     commands, _ = plan(_desired(), links, {"br100": {"10.1.100.1/24"}})
     changes = [c for c in commands if c[-1] != "up" and c[0] != "bridge"]
     assert changes == []
+
+
+def test_overlay_mtu_defaults_to_1450():
+    # v2.1.1 fix: the kernel default (1500) black-holed packets above 1450 bytes on a
+    # 1500-byte underlay
+    d = _desired()
+    assert {d.devices[n].mtu for n in ("br100", "vx100", "br5000", "vx5000")} == {1450}
+    vxlan = {"vxlan": {**VXLAN["vxlan"], "mtu": 9000}}
+    assert desired_state(VRFS, vxlan, "mgmt", 1001).devices["vx100"].mtu == 9000
+    commands, _ = plan(d, [_link("eth2"), _link("red1", "dummy")], {})
+    assert ["ip", "link", "set", "dev", "vx100", "mtu", "1450"] in commands
 
 
 def test_plan_recreates_changed_vxlan_and_removes_stale_devices():
@@ -186,3 +199,83 @@ def test_periodic_reconciliation_waits_for_an_open_transaction(monkeypatch):
     agent.transaction("tarvos-vrf", "change")
     monkeypatch.setattr(netdev_sync, "IN_FLIGHT_TIMEOUT", -1.0)  # "done" was lost
     assert not agent.busy()
+
+
+def test_isolation_routes_added_for_each_vrf_and_removed_when_stale():
+    from netdev_sync import ISOLATION_METRIC, ROUTE_PROTO, isolation_plan
+
+    d = _desired()
+    v4, v6 = isolation_plan(d, {4: [], 6: []})
+    spec = ["unreachable", "default", "metric", str(ISOLATION_METRIC)]
+    assert v4 == [["ip", "-4", "route", "replace", *spec, "table", "1010",
+                   "proto", str(ROUTE_PROTO)]]  # fmt: skip
+    assert v6 and v6[0][:2] == ["ip", "-6"]
+    # present: nothing to do; a stale table (VRF removed) is cleaned up; foreign routes
+    # (other protocol) are never touched
+    routes = {
+        4: [
+            {"dst": "default", "table": "1010", "protocol": "tarvos"},
+            {"dst": "default", "table": "2020", "protocol": "tarvos"},
+            {"dst": "default", "table": "3030", "protocol": "static"},
+        ],
+        6: [{"dst": "default", "table": "1010", "protocol": "250"}],
+    }
+    v4, v6 = isolation_plan(d, routes)
+    assert v4 == [["ip", "-4", "route", "del", *spec, "table", "2020"]]
+    assert v6 == []
+
+
+def test_management_default_route_restored_only_when_missing(tmp_path):
+    from netdev_sync import mgmt_route_plan, read_mgmt_state
+
+    path = tmp_path / "mgmt-vrf.env"
+    path.write_text("MGMT_VRF_TABLE=1001\nMGMT_INTERFACE=eth0\nMGMT_GW4=172.17.0.1\nMGMT_GW6=\n")
+    state = read_mgmt_state(str(path))
+    assert mgmt_route_plan(state, {4: [], 6: []}) == [
+        ["ip", "-4", "route", "replace", "default", "via", "172.17.0.1", "dev", "eth0",
+         "table", "1001"],
+    ]  # fmt: skip
+    # any default already in the table (even another gateway) is left alone
+    assert mgmt_route_plan(state, {4: [{"dst": "default", "gateway": "10.0.0.1"}], 6: []}) == []
+    assert mgmt_route_plan(read_mgmt_state(str(tmp_path / "absent")), {4: [], 6: []}) == []
+    assert mgmt_route_plan({**state, "MGMT_GW4": "x; rm -rf /"}, {4: [], 6: []}) == []
+
+
+def test_commands_are_batched_per_tool_in_order(monkeypatch):
+    # v2.1.1 day-2 finding: removing 100 VNIs (one ip process per command) outlasted the
+    # 5 s Sysrepo callback timeout
+    import subprocess
+
+    import netdev_sync
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs.get("input")))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(netdev_sync.subprocess, "run", run)
+    netdev_sync.execute([
+        ["ip", "link", "del", "vx1"], ["ip", "link", "del", "br1"],
+        ["bridge", "link", "set", "dev", "vx2", "learning", "off"],
+        ["ip", "link", "set", "dev", "vx2", "up"],
+        ["ip", "-4", "route", "replace", "unreachable", "default", "table", "10"],
+    ])  # fmt: skip
+    assert calls[0] == (["ip", "-batch", "-"], "link del vx1\nlink del br1\n")
+    assert calls[1][0][:2] == ["bridge", "link"]  # single command: run as is
+    assert calls[2][0] == ["ip", "link", "set", "dev", "vx2", "up"]
+    assert calls[3][0][:2] == ["ip", "-4"]
+
+
+def test_batch_error_names_the_failing_command(monkeypatch):
+    import subprocess
+
+    import netdev_sync
+
+    def run(args, **kwargs):
+        stderr = 'Cannot find device "br9"\nCommand failed -:2\n'
+        return subprocess.CompletedProcess(args, 1, "", stderr)
+
+    monkeypatch.setattr(netdev_sync.subprocess, "run", run)
+    with pytest.raises(NetdevError, match="ip link del br9: Cannot find device"):
+        netdev_sync.execute([["ip", "link", "del", "vx9"], ["ip", "link", "del", "br9"]])

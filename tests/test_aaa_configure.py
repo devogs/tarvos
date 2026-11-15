@@ -74,7 +74,7 @@ def test_pam_local_only_has_no_tacplus():
 
 def test_pam_tacacs_failover_order_and_admin_bypass():
     pam = render_pam(AaaSettings(("10.0.0.1", "10.0.0.2"), "s3cret", 5), with_session=False)
-    assert "server=10.0.0.1 server=10.0.0.2" in pam
+    assert "server=10.0.0.1 secret=s3cret server=10.0.0.2 secret=s3cret" in pam  # order kept
     assert "timeout=5" in pam
     assert "user = admin" in pam  # break-glass account skips TACACS+
     assert "session" not in pam
@@ -112,3 +112,49 @@ def test_secret_never_logged(tmp_path, capsys):
     configure(env, tmp_path, set_password=False)
     captured = capsys.readouterr()
     assert "topsecret" not in captured.out + captured.err
+
+
+def test_auth_files_are_replaced_all_or_nothing(tmp_path, monkeypatch):
+    import aaa_configure
+
+    settings = aaa_configure.load_settings({"TACACS_SERVER": "10.0.0.1", "TACACS_SECRET": "k"})
+    aaa_configure.write_auth_files(settings, tmp_path)
+    before = {p: p.read_text() for p in (tmp_path / "etc/pam.d").iterdir()}
+    real = aaa_configure._stage
+    calls = []
+
+    def flaky(root, path, content, mode):
+        calls.append(path)
+        if len(calls) == 3:
+            raise OSError("No space left on device")
+        return real(root, path, content, mode)
+
+    monkeypatch.setattr(aaa_configure, "_stage", flaky)
+    other = aaa_configure.load_settings({"TACACS_SERVER": "10.0.0.2", "TACACS_SECRET": "x"})
+    with pytest.raises(OSError):
+        aaa_configure.write_auth_files(other, tmp_path)
+    after = {p: p.read_text() for p in (tmp_path / "etc/pam.d").iterdir()}
+    assert after == before  # no file replaced, no temporary file left behind
+
+
+def test_netconf_access_none_refuses_tacacs_users_at_login(tmp_path):
+    import aaa_configure
+
+    settings = aaa_configure.load_settings(
+        {"TACACS_SERVER": "10.0.0.1", "TACACS_SECRET": "k", "TACACS_NETCONF_ACCESS": "none"}
+    )
+    aaa_configure.write_auth_files(settings, tmp_path)
+    deny = "account requisite pam_succeed_if.so quiet user = admin"
+    assert deny in (tmp_path / "etc/pam.d/netopeer2.conf").read_text()
+    assert deny in (tmp_path / "etc/pam.d/gnmi").read_text()
+    assert deny not in (tmp_path / "etc/pam.d/sshd").read_text()  # shell access unchanged
+
+
+def test_lockout_is_recorded_and_explained():
+    import aaa_configure
+
+    settings = aaa_configure.AaaSettings(("10.0.0.1",), "k", 3, local_fallback=False)
+    pam = aaa_configure.render_pam(settings, with_session=False).splitlines()
+    exec_line = next(i for i, line in enumerate(pam) if "locked-out" in line)
+    assert "user != admin" in pam[exec_line - 1] and "success=1" in pam[exec_line - 1]
+    assert "requisite" in pam[exec_line + 1] and "user != admin" in pam[exec_line + 1]

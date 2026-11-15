@@ -6,7 +6,8 @@
 //
 // Configuration comes from the environment (see .env.example): TELEMETRY_EXCLUDE,
 // TELEMETRY_SYNC_INTERVAL, TELEMETRY_SOCKET, TELEMETRY_LISTEN_VRF, PROMETHEUS_ENABLED,
-// PROMETHEUS_PORT, GNMI_ENABLED, GNMI_PORT, GNMI_TLS, GNMI_TLS_CERT, GNMI_TLS_KEY.
+// PROMETHEUS_PORT, PROMETHEUS_ROUTING_METRICS, PROMETHEUS_KERNEL_METRICS,
+// PROMETHEUS_STATE_CACHE, GNMI_ENABLED, GNMI_PORT, GNMI_TLS, GNMI_TLS_CERT, GNMI_TLS_KEY.
 package main
 
 import (
@@ -29,6 +30,7 @@ import (
 	"github.com/devogs/tarvos/telemetry/internal/gnmisrv"
 	"github.com/devogs/tarvos/telemetry/internal/listen"
 	"github.com/devogs/tarvos/telemetry/internal/prom"
+	"github.com/devogs/tarvos/telemetry/internal/state"
 )
 
 var version = "dev"
@@ -117,8 +119,19 @@ func run() error {
 			return err
 		}
 		go func() { <-ctx.Done(); l.Close() }()
+		collector := &prom.Collector{
+			Source: a, Version: version, FRRVersion: env("TARVOS_FRR_VERSION", "unknown"),
+			Node: enabled("PROMETHEUS_KERNEL_METRICS", true),
+		}
+		routing, kernel := enabled("PROMETHEUS_ROUTING_METRICS", true), collector.Node
+		if routing || kernel {
+			collector.State = &state.Fetcher{
+				Sysrepocfg: env("SYSREPOCFG", "sysrepocfg"), Routing: routing, Kernel: kernel,
+				TTL: seconds("PROMETHEUS_STATE_CACHE", 10),
+			}
+		}
 		go func() {
-			if err := prom.Serve(l, a, version); err != nil {
+			if err := prom.Serve(l, collector); err != nil {
 				log.Printf("ERROR: Prometheus exporter: %v", err)
 			}
 		}()

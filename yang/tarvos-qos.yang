@@ -20,8 +20,9 @@ module tarvos-qos {
      (counters restart from zero). Removing an interface restores the kernel
      default qdisc.
 
-     htb: class 1:1 shapes to 'bandwidth'; each class is htb class 1:<id in
-     hex> with an fq_codel leaf; unclassified traffic goes to a default class
+     htb: class 1:ffff shapes to 'bandwidth' (outside the class id range, so
+     every id is usable); each class is htb class 1:<id in hex> with an
+     fq_codel leaf; unclassified traffic goes to a default class
      1:fff (priority 7) that gets the bandwidth left over. prio: eight bands; a
      class uses band 'priority + 1', unclassified traffic band 5. DSCP values
      are matched on the IPv4 DS field and the IPv6 traffic class.
@@ -31,7 +32,8 @@ module tarvos-qos {
   revision 2026-11-14 {
     description
       "Backend (tarvos-qos-sync) and operational state: qdisc and class
-       statistics.";
+       statistics. Tarvos 2.1.1: the htb root class moved to 1:ffff (class
+       id 1 collided with it), units in the descriptions.";
   }
   revision 2026-11-12 {
     description
@@ -79,6 +81,7 @@ module tarvos-qos {
     }
     leaf bytes {
       type yang:counter64;
+      units "bytes";
       description
         "Bytes sent.";
     }
@@ -99,6 +102,7 @@ module tarvos-qos {
     }
     leaf backlog-bytes {
       type yang:gauge64;
+      units "bytes";
       description
         "Bytes currently queued.";
     }
@@ -144,7 +148,7 @@ module tarvos-qos {
         }
         units "kbit/s";
         description
-          "Bandwidth ceiling of the interface.";
+          "Bandwidth ceiling of the interface (kbit/s).";
       }
 
       list class {
@@ -186,7 +190,7 @@ module tarvos-qos {
           units "kbit/s";
           description
             "Guaranteed rate of the class (htb). Unset: an equal share of the
-             bandwidth left by the classes that set one.";
+             bandwidth left by the classes that set one (kbit/s).";
         }
 
         leaf ceil {
@@ -195,7 +199,7 @@ module tarvos-qos {
           }
           units "kbit/s";
           description
-            "Maximum rate of the class (htb); defaults to the interface bandwidth.";
+            "Maximum rate of the class (htb); defaults to the interface bandwidth (kbit/s).";
         }
 
         container state {

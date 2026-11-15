@@ -26,9 +26,14 @@ def test_netconf_servers_replace_the_environment_with_their_own_secrets():
     assert "server=192.0.2.1 secret=k1 server=2001:db8::1 secret=k2" in pam
 
 
-def test_same_secret_keeps_the_classic_argument_order():
-    settings = AaaSettings(("192.0.2.1", "192.0.2.2"), "", 3, ("k", "k"))
-    assert "server=192.0.2.1 server=192.0.2.2 secret=k " in render_pam(settings, with_session=False)
+def test_every_server_gets_its_secret():
+    # v2.1.1 day-2 finding: "server=A server=B secret=K" left A without a key in
+    # pam_tacplus 1.7 (unobfuscated request, every login fell through to B)
+    for settings in (AaaSettings(("192.0.2.1", "192.0.2.2"), "", 3, ("k", "k")),
+                     AaaSettings(("192.0.2.1", "192.0.2.2"), "k", 3)):  # fmt: skip
+        pam = render_pam(settings, with_session=False)
+        assert "server=192.0.2.1 secret=k server=192.0.2.2 secret=k " in pam
+        assert " encrypt" not in pam
 
 
 def test_disabling_local_fallback():
@@ -36,7 +41,7 @@ def test_disabling_local_fallback():
         effective(AaaSettings((), "", 3), {"aaa": {"local-fallback": {"enabled": False}}})
     settings, _ = effective(BASE, {"aaa": {"local-fallback": {"enabled": False}}})
     pam = render_pam(settings, with_session=True)
-    assert pam.splitlines()[1] == "auth requisite pam_succeed_if.so quiet user != admin"
+    assert "auth requisite pam_succeed_if.so quiet user != admin" in pam.splitlines()[1:4]
     assert "account requisite pam_succeed_if.so quiet user != admin" in pam
 
 
@@ -103,3 +108,44 @@ def test_backend_writes_files_once(tmp_path, monkeypatch):
     assert len(writes) == 1 and backend.source == "environment"
     backend.apply({"aaa": {"tacacs": {"server": [{"address": "192.0.2.9", "secret": "z"}]}}})
     assert len(writes) == 2 and backend.state({})["aaa"]["state"]["server-source"] == "netconf"
+
+
+def test_failed_write_is_retried_by_the_restore(tmp_path, monkeypatch):
+    import aaa_sync
+
+    monkeypatch.setattr(aaa_sync.threading, "Thread", lambda **kw: type("T", (), {
+        "start": lambda self: None})())  # fmt: skip
+    writes = []
+
+    def write(settings, root):
+        if settings.servers == ("192.0.2.9",):
+            raise OSError("No space left on device")
+        writes.append(settings)
+
+    monkeypatch.setattr(aaa_sync, "write_auth_files", write)
+    backend = AaaBackend(root=tmp_path, env={"TACACS_SERVER": "10.0.0.1", "TACACS_SECRET": "k"})
+    backend.apply({})
+    with pytest.raises(OSError):
+        backend.apply({"aaa": {"tacacs": {"server": [{"address": "192.0.2.9", "secret": "z"}]}}})
+    backend.apply({})  # restore of the running configuration: must rewrite, not skip
+    assert len(writes) == 2
+
+
+def test_authentication_counts(tmp_path, monkeypatch):
+    import aaa_event
+    from aaa_sync import read_counts
+
+    monkeypatch.setenv("PAM_TYPE", "auth")
+    monkeypatch.setattr(aaa_event, "STATE_DIR", str(tmp_path))
+    for method, result in [("tacacs", "success"), ("tacacs", "success"), ("local", "failure")]:
+        assert aaa_event.main(["aaa_event.py", method, result]) == 0
+    counts = read_counts(str(tmp_path))
+    assert counts == [
+        {"method": "local", "result": "failure", "count": 1},
+        {"method": "tacacs", "result": "success", "count": 2},
+    ]
+    settings = AaaSettings((), "", 5)
+    out = state(settings, "environment", {}, {}, counts)["aaa"]["state"]
+    assert out["authentication-count"] == counts
+    (tmp_path / "counts.json").write_text('{"x:y": 1, "local:success": "3"}')
+    assert read_counts(str(tmp_path)) == []  # malformed entries ignored

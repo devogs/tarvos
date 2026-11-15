@@ -21,7 +21,7 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 start=$(date +%s)
-docker run -d --name "${NAME}" \
+docker run -d --name "${NAME}" --hostname smoke-node \
     --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
     --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
     -p "${SSH_HOST_PORT}:22" -p "${NETCONF_HOST_PORT}:830" -p "127.0.0.1:${PROMETHEUS_HOST_PORT}:9273" \
@@ -72,6 +72,15 @@ else
     echo "WARNING: eth0 is not in VRF mgmt on this host" >&2
 fi
 
+echo "== troubleshooting tools over SSH as admin (unprivileged): ping, vrfexec in mgmt, tcpdump"
+gw="$(docker inspect -f '{{.NetworkSettings.Gateway}}' "${NAME}")"
+out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0.1 \
+    "ping -c1 -W2 127.0.0.1 >/dev/null && vrfexec mgmt ping -c1 -W2 ${gw} >/dev/null && vrfexec --list && tcpdump --version >/dev/null && echo tools-ok")" ||
+    fail "toolbox over SSH: ${out}"
+if ! grep -q 'tools-ok' <<<"${out}" || ! grep -qx 'mgmt' <<<"${out}"; then
+    fail "toolbox over SSH: ${out}"
+fi
+
 echo "== FRR health"
 docker exec "${NAME}" vtysh -c 'show version' | grep -q 'FRRouting 10.7.1' || fail "not FRR 10.7.1"
 docker exec "${NAME}" pgrep -x mgmtd >/dev/null || fail "mgmtd not running"
@@ -86,6 +95,11 @@ grep -Eq 'Transmit delay:[[:space:]]+30' <<<"${lldp_conf}" || {
     echo "${lldp_conf}" >&2
     fail "lldpd did not apply /etc/lldpd.d/tarvos.conf"
 }
+
+# v2.1.0 bug: the runtime backend re-applied "tarvos" as the system name on every node.
+sleep 2
+sysname="$(docker exec "${NAME}" lldpcli show chassis | awk '/SysName:/ {print $2}')"
+[ "${sysname}" = "smoke-node" ] || fail "LLDP system name is '${sysname}', not the hostname"
 
 echo "== LLDP configured over NETCONF is applied by lldpd, and removing it restores the default"
 nc_lldp="$(dirname "$0")/netconf_lldp.py"
@@ -112,8 +126,9 @@ snapshot="$(docker exec "${NAME}" tarvos-telemetry snapshot)" || {
 python3 "$(dirname "$0")/telemetry_check.py" smoke "${snapshot}" || fail "unexpected telemetry snapshot"
 
 echo "== Prometheus /metrics (port 9273, management VRF)"
-python3 "$(dirname "$0")/metrics_check.py" "http://127.0.0.1:${PROMETHEUS_HOST_PORT}/metrics" ||
+python3 "$(dirname "$0")/metrics_check.py" "http://127.0.0.1:${PROMETHEUS_HOST_PORT}/metrics" --node ||
     fail "Prometheus exporter"
+
 
 mem="$(docker stats --no-stream --format '{{.MemUsage}}' "${NAME}" | awk '{print $1}')"
 printf 'BOOT_SECONDS=%s\nMEM_USAGE=%s\n' "${boot_seconds}" "${mem}" >metrics.env

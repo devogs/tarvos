@@ -158,6 +158,7 @@ module tarvos-nftables {
           }
           leaf matched-bytes {
             type yang:counter64;
+            units "bytes";
             description
               "Bytes of the packets that matched the rule.";
           }
@@ -169,6 +170,7 @@ module tarvos-nftables {
           }
           leaf dropped-bytes {
             type yang:counter64;
+            units "bytes";
             description
               "Bytes of the dropped packets.";
           }

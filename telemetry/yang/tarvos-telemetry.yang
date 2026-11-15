@@ -26,7 +26,8 @@ module tarvos-telemetry {
 
   revision 2026-11-14 {
     description
-      "Initial revision.";
+      "Initial revision. Tarvos 2.1.1: container (cgroup CPU, memory, PIDs,
+       per-daemon resources) and ebpf (map memory, programs).";
   }
 
   grouping packets-bytes {
@@ -39,6 +40,7 @@ module tarvos-telemetry {
     }
     leaf bytes {
       type yang:counter64;
+      units "bytes";
       description
         "Bytes.";
     }
@@ -233,6 +235,163 @@ module tarvos-telemetry {
           "Direction.";
       }
       uses packets-bytes;
+    }
+
+    container container {
+      description
+        "Resources of this node's container, from its own cgroup (never the
+         host's /proc/meminfo or /proc/stat). Same values as the Prometheus
+         tarvos_container_* series.";
+      leaf cgroup-version {
+        type uint8;
+        description
+          "cgroup version read (2: unified hierarchy, 1: legacy).";
+      }
+      leaf cpu-seconds {
+        type decimal64 {
+          fraction-digits 3;
+        }
+        units "seconds";
+        description
+          "CPU time used by the container (seconds).";
+      }
+      leaf memory-usage {
+        type uint64;
+        units "bytes";
+        description
+          "Memory charged to the container (memory.current).";
+      }
+      leaf memory-anon {
+        type uint64;
+        units "bytes";
+        description
+          "Anonymous memory (memory.stat anon).";
+      }
+      leaf memory-file {
+        type uint64;
+        units "bytes";
+        description
+          "Page cache (memory.stat file).";
+      }
+      leaf memory-kernel {
+        type uint64;
+        units "bytes";
+        description
+          "Kernel memory (memory.stat kernel, cgroup v2).";
+      }
+      leaf memory-slab {
+        type uint64;
+        units "bytes";
+        description
+          "Slab memory (memory.stat slab, cgroup v2).";
+      }
+      leaf memory-limit {
+        type uint64;
+        units "bytes";
+        description
+          "Memory limit; absent when unlimited.";
+      }
+      leaf pids {
+        type uint64;
+        description
+          "Processes and threads in the cgroup.";
+      }
+      leaf uptime {
+        type decimal64 {
+          fraction-digits 3;
+        }
+        units "seconds";
+        description
+          "Time since the container's PID 1 started (seconds).";
+      }
+      list process {
+        key "name";
+        description
+          "Daemons of the node (all processes of each, summed).";
+        leaf name {
+          type string;
+          description
+            "Daemon (bgpd, zebra, netopeer2-server, frr_sync, ...; 'other' for
+             the rest).";
+        }
+        leaf count {
+          type uint32;
+          description
+            "Processes.";
+        }
+        leaf resident-memory {
+          type uint64;
+          units "bytes";
+          description
+            "Resident memory (bytes).";
+        }
+        leaf cpu-seconds {
+          type decimal64 {
+            fraction-digits 3;
+          }
+          units "seconds";
+          description
+            "CPU time (seconds).";
+        }
+      }
+    }
+
+    container ebpf {
+      description
+        "Cost of the agent's eBPF objects.";
+      leaf attached-interfaces {
+        type uint32;
+        description
+          "Interfaces with the tc programs attached.";
+      }
+      leaf run-stats {
+        type boolean;
+        description
+          "The host sets kernel.bpf_stats_enabled=1, so per-program run time and
+           run count are reported (Tarvos never changes that sysctl).";
+      }
+      list map {
+        key "name";
+        description
+          "eBPF maps.";
+        leaf name {
+          type string;
+          description
+            "Map name.";
+        }
+        leaf memory {
+          type uint64;
+          units "bytes";
+          description
+            "Memory charged for the map (bytes).";
+        }
+      }
+      list program {
+        key "name";
+        description
+          "eBPF programs.";
+        leaf name {
+          type string;
+          description
+            "Program name.";
+        }
+        leaf type {
+          type string;
+          description
+            "Program type (sched_cls, tracing).";
+        }
+        leaf run-time {
+          type uint64;
+          units "nanoseconds";
+          description
+            "Time spent running the program (nanoseconds; only with run-stats).";
+        }
+        leaf run-count {
+          type yang:counter64;
+          description
+            "Runs of the program (only with run-stats).";
+        }
+      }
     }
   }
 }

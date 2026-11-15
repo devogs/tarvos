@@ -81,3 +81,65 @@ def test_counters_and_state():
 def test_state_when_inactive():
     data = state(config(BGP, enabled=False), None)["nftables"]["copp"]
     assert data == {"state": {"active": False, "rule-count": 0}}
+
+
+def test_every_failure_path_leaves_the_ruleset_alone(monkeypatch):
+    """Milestone 2, bug 3: no failure may leave a partly applied CoPP table."""
+    import nft_sync
+
+    calls = []
+    config = {"nftables": {"copp": {"rule": [
+        {"name": "bgp", "protocol": "tcp", "destination-port": 179}]}}}  # fmt: skip
+
+    def nft(*args, script=None):
+        calls.append(args)
+        if args[0] == fail_on:
+            raise nft_sync.BackendError("nft: Error: syntax error")
+        return ""
+
+    monkeypatch.setattr(nft_sync, "nft", nft)
+    backend = nft_sync.NftBackend()
+    # 1. render refuses: nft is never called
+    with pytest.raises(nft_sync.BackendError):
+        fail_on = None
+        backend.apply({"nftables": {"copp": {"rule": [{"name": "bad name", "protocol": "tcp"}]}}})
+    assert calls == []
+    # 2. the dry run refuses: the real transaction is never sent
+    fail_on = "-c"
+    with pytest.raises(nft_sync.BackendError):
+        backend.apply(config)
+    assert calls == [("-c", "-f", "-")]
+    # 3. the transaction itself fails: one "nft -f" is all-or-nothing in the kernel, and it
+    #    is the only command sent
+    calls.clear()
+    fail_on = "-f"
+    with pytest.raises(nft_sync.BackendError):
+        backend.apply(config)
+    assert calls == [("-c", "-f", "-"), ("-f", "-")]
+
+
+def test_flushed_table_is_restored_and_unchanged_one_kept(monkeypatch):
+    # v2.1.1 chaos finding: "nft flush ruleset" left CoPP removed for good
+    import nft_sync
+
+    calls, present = [], {"table": True}
+
+    def nft(*args, script=None):
+        if args[:2] == ("list", "table"):
+            if not present["table"]:
+                raise nft_sync.BackendError("No such file or directory")
+            return ""
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(nft_sync, "nft", nft)
+    backend = nft_sync.NftBackend()
+    rule = {"name": "bgp", "protocol": "tcp", "destination-port": 179}
+    config = {"nftables": {"copp": {"rule": [rule]}}}
+    backend.apply(config)
+    calls.clear()
+    backend.apply(config)
+    assert calls == []  # periodic pass: in place, counters kept
+    present["table"] = False
+    backend.apply(config)
+    assert ("-f", "-") in calls

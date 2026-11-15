@@ -16,6 +16,20 @@ def log(component: str, message: str) -> None:
     print(f"[{component}] {message}", file=sys.stderr, flush=True)
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+MAX_MESSAGE = 2000
+
+
+def operator_message(text: str) -> str:
+    """An error message fit for an <rpc-error>: no ANSI colours, no control characters
+    (XML 1.0 forbids them: a client cannot parse a reply that carries one), bounded."""
+    text = _CONTROL.sub("", _ANSI.sub("", str(text))).strip()
+    if len(text) > MAX_MESSAGE:
+        text = text[: MAX_MESSAGE - 3] + "..."
+    return text
+
+
 def parse_ip_list(raw: str | None, name: str, max_items: int) -> list[str]:
     """Parse an env list of IP addresses into a validated, ordered, de-duplicated list.
 

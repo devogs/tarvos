@@ -56,7 +56,8 @@ for n in 1 2; do
         --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --cap-add BPF --cap-add PERFMON \
         --sysctl net.ipv4.ip_forward=1 \
         --sysctl net.ipv4.tcp_l3mdev_accept=1 --sysctl net.ipv4.udp_l3mdev_accept=1 \
-        -p "127.0.0.1::830" -p "127.0.0.1::57400" -e "FRR_DAEMONS=bgpd" "${IMAGE}" >/dev/null
+        -p "127.0.0.1::830" -p "127.0.0.1::57400" -p "127.0.0.1::9273" \
+        -e "FRR_DAEMONS=bgpd" "${IMAGE}" >/dev/null
     # Links are attached after boot, as containerlab does: eth1 fabric, eth2 LAN.
     docker network connect --ip "172.30.0.1${n}" "${NETS[0]}" "${leaf}"
     docker network connect "${NETS[n]}" "${leaf}"
@@ -116,14 +117,89 @@ h2_mac="$(docker exec "h2-${ID}" cat /sys/class/net/eth0/address)"
 wait_for 30 "leaf1 has no type-2 route for h2 (${h2_mac}) in NETCONF state" \
     sh -c "python3 '${HERE}/netconf_get.py' 127.0.0.1 $(port 1) '<bgp xmlns=\"${BGP_NS}\"><state><evpn><route/></evpn></state></bgp>' | grep -qi '<mac>${h2_mac}</mac>'"
 
+echo "== type-2 MAC+IP for h2 once it talks to its gateway; NETCONF agrees with FRR"
+# v2.1.0 lab question: leaf2's host was seen as MAC-only. A leaf learns a host's IP from
+# its SVI neighbour table, so only after the host exchanged ARP with the anycast gateway:
+# before that the route is MAC-only, in FRR and in the NETCONF state alike.
+type2_netconf() {  # type-2 prefixes of MAC $1 in leaf1's NETCONF state
+    python3 "${HERE}/netconf_get.py" 127.0.0.1 "$(port 1)" \
+        "<bgp xmlns=\"${BGP_NS}\"><state><evpn><route/></evpn></state></bgp>" |
+        grep -io "<prefix>\[2\]:\[0\]:\[48\]:\[$1\][^<]*</prefix>" | sed 's/<[^>]*>//g' | sort -u
+}
+type2_frr() {  # the same from FRR (reference)
+    vty 1 'show bgp l2vpn evpn route type macip json' | python3 -c "
+import json, sys
+for rd, routes in json.load(sys.stdin).items():
+    if isinstance(routes, dict):
+        for prefix in routes:
+            if prefix.lower().startswith('[2]:[0]:[48]:[$1]'):
+                print(prefix)" | sort -u
+}
+docker exec "h2-${ID}" ping -c1 -W2 10.1.100.1 >/dev/null || fail "h2 cannot ping its anycast gateway"
+wait_for 30 "leaf1 has no MAC+IP type-2 route for h2 in NETCONF state" \
+    sh -c "python3 '${HERE}/netconf_get.py' 127.0.0.1 $(port 1) '<bgp xmlns=\"${BGP_NS}\"><state><evpn><route/></evpn></state></bgp>' | grep -qi ':\[${h2_mac}\]:\[32\]:\[10.1.100.12\]'"
+nc_routes="$(type2_netconf "${h2_mac}")"
+frr_routes="$(type2_frr "${h2_mac}")"
+[ "${nc_routes}" = "${frr_routes}" ] ||
+    fail "NETCONF and FRR disagree on h2's type-2 routes: NETCONF ${nc_routes} / FRR ${frr_routes}"
+
 echo "== symmetric IRB over L3VNI 5000: h1 -> leaf2's 10.10.2.1 (VRF RED)"
 wait_for 30 "h1 cannot reach 10.10.2.1 (symmetric IRB)" docker exec "h1-${ID}" ping -c1 -W1 10.10.2.1
 for _ in $(seq 1 30); do nc_state 2>/dev/null && break; sleep 1; done
 nc_state || fail "leaf1 NETCONF state check failed"
 
+echo "== troubleshooting tools across the fabric (vrfexec, tcpdump, path MTU)"
+# h1's anycast gateway answers, traceroute in VRF RED crosses the L3VNI to leaf2.
+docker exec "h1-${ID}" ping -c1 -W2 10.1.100.1 >/dev/null || fail "h1 cannot ping its anycast gateway"
+docker exec "leaf1-${ID}" vrfexec RED ping -c1 -W2 10.10.2.1 >/dev/null ||
+    fail "vrfexec RED ping 10.10.2.1 from leaf1"
+docker exec "leaf1-${ID}" vrfexec RED traceroute -n -w 2 -q 1 -m 4 10.10.2.1 | grep -q '10.10.2.1' ||
+    fail "vrfexec RED traceroute across the fabric"
+# tcpdump on the underlay port shows the VXLAN outer header of h1 -> h2 traffic.
+cap="$(docker exec "leaf1-${ID}" sh -c "timeout 10 tcpdump -lnni eth1 -c 1 'udp port 4789' 2>/dev/null &
+    sleep 2; wait" & sleep 3; docker exec "h1-${ID}" ping -c3 -W1 10.1.100.12 >/dev/null; wait)"
+grep -q 'VXLAN.* vni 100' <<<"${cap}" || fail "tcpdump did not decode VXLAN VNI 100 on eth1: ${cap}"
+# Path MTU across the VXLAN underlay: 1500 - 50 bytes of VXLAN overhead = 1450 inner,
+# so 1422 bytes of ICMP payload (+ 28 of IP/ICMP headers) pass with DF set.
+docker exec "leaf1-${ID}" vrfexec RED ping -M "do" -s 1422 -c1 -W2 10.10.2.1 >/dev/null ||
+    fail "1450-byte packets with DF do not cross the fabric"
+# v2.1.1 fix: one byte more is refused at once with the overlay MTU (it was silently
+# dropped in the underlay: VXLAN devices had the kernel default MTU, 1500).
+out="$(docker exec "leaf1-${ID}" vrfexec RED ping -M "do" -s 1423 -c1 -W2 10.10.2.1 2>&1 || true)"
+grep -qi 'message too long\|mtu=1450' <<<"${out}" || fail "1451-byte packet not refused locally (overlay MTU 1450): ${out}"
+out="$(docker exec "leaf1-${ID}" vrfexec RED tracepath -n -m 4 10.10.2.1 2>&1 || true)"
+grep -q 'pmtu 1450' <<<"${out}" || fail "tracepath does not report pmtu 1450: ${out}"
+
 echo "== eBPF telemetry: per-VNI VXLAN counters and BGP/VXLAN packets on the fabric port"
 python3 "${HERE}/telemetry_check.py" evpn "$(docker exec "leaf1-${ID}" tarvos-telemetry snapshot)" ||
     fail "telemetry counters"
+
+echo "== Prometheus: BGP/EVPN health, and per-node container resources"
+metrics_url() { echo "http://127.0.0.1:$(docker port "leaf$1-${ID}" 9273/tcp | head -n1 | sed 's/.*://')/metrics"; }
+for _ in $(seq 1 15); do
+    python3 "${HERE}/metrics_check.py" "$(metrics_url 1)" --node --evpn >/dev/null 2>&1 && break
+    sleep 1
+done
+python3 "${HERE}/metrics_check.py" "$(metrics_url 1)" --node --evpn || fail "leaf1 metrics"
+# Each node reports its own container (cgroup), not the host: the two leaves differ,
+# both differ from the host's used memory (what /proc/meminfo shows inside a container),
+# and each is close to what Docker accounts for that container.
+read -r used1 < <(python3 "${HERE}/metrics_check.py" "$(metrics_url 1)" --print 'tarvos_container_memory_bytes{type="usage"}')
+read -r used2 < <(python3 "${HERE}/metrics_check.py" "$(metrics_url 2)" --print 'tarvos_container_memory_bytes{type="usage"}')
+host_used="$(docker exec "leaf1-${ID}" awk '/MemTotal/ {t=$2} /MemAvailable/ {a=$2} END {print (t-a)*1024}' /proc/meminfo)"
+docker_used="$(docker stats --no-stream --format '{{.MemUsage}}' "leaf1-${ID}" | awk '{print $1}')"
+python3 - "${used1}" "${used2}" "${host_used}" "${docker_used}" <<'EOF' || fail "container memory is not per node"
+import re, sys
+used1, used2, host = (float(v) for v in sys.argv[1:4])
+value, unit = re.match(r"([0-9.]+)([KMG]i?B)", sys.argv[4]).groups()
+docker = float(value) * {"KiB": 2**10, "MiB": 2**20, "GiB": 2**30, "KB": 1e3, "MB": 1e6, "GB": 1e9}[unit]
+print(f"   leaf1 {used1 / 2**20:.0f} MiB, leaf2 {used2 / 2**20:.0f} MiB, docker stats {docker / 2**20:.0f} MiB, host used {host / 2**20:.0f} MiB")
+assert used1 != used2, "both leaves report the same memory"
+assert abs(used1 - host) > 0.1 * host, "leaf1 reports the host's memory"
+# docker stats subtracts the inactive page cache: usage is at least that, at most a few
+# times more
+assert docker * 0.8 <= used1 <= docker * 4, "usage far from docker stats"
+EOF
 
 echo "== gNMI (gnmic): BGP/EVPN state, OpenConfig and eBPF counters, ON_CHANGE"
 gnmi_port="$(docker port "leaf1-${ID}" 57400/tcp | head -n1 | sed 's/.*://')"
@@ -140,17 +216,23 @@ for t in 2 3 5; do
 done
 got="$(gn get --encoding proto --format flat --path '/interfaces/interface[name=eth1]/state/counters/in-pkts')"
 grep -Eq 'in-pkts: [1-9]' <<<"${got}" || fail "gNMI: OpenConfig in-pkts of eth1: ${got}"
+got="$(gn get --encoding proto --format flat --path '/telemetry/container/memory-usage')"
+grep -Eq 'memory-usage: [1-9]' <<<"${got}" || fail "gNMI: /telemetry/container/memory-usage: ${got}"
+got="$(gn get --encoding proto --format flat --path '/telemetry/container/process[name=bgpd]/resident-memory')"
+grep -Eq 'resident-memory: [1-9]' <<<"${got}" || fail "gNMI: bgpd resident memory: ${got}"
 got="$(gn get --encoding proto --format flat --path '/telemetry/vni[id=100]/rx/packets')"
 grep -Eq 'packets: [1-9]' <<<"${got}" || fail "gNMI: tarvos-telemetry VNI 100: ${got}"
-# ON_CHANGE: red1 goes down while subscribed
+# ON_CHANGE: obs1 goes down while subscribed (an interface Tarvos does not own: VRF
+# member ports such as red1 are set up again by the reconciler, a race with the test)
+docker exec "leaf1-${ID}" sh -c "ip link add obs1 type dummy && ip link set obs1 up"
 gnmi_out="$(mktemp)"
 gn subscribe --stream-mode on-change --format flat \
-    --path '/interfaces/interface[name=red1]/state/oper-status' >"${gnmi_out}" 2>&1 &
+    --path '/interfaces/interface[name=obs1]/state/oper-status' >"${gnmi_out}" 2>&1 &
 sub_pid=$!
 sleep 4
-docker exec "leaf1-${ID}" ip link set red1 down
+docker exec "leaf1-${ID}" ip link set obs1 down
 for _ in $(seq 1 15); do grep -q 'oper-status: DOWN' "${gnmi_out}" && break; sleep 1; done
-docker exec "leaf1-${ID}" ip link set red1 up
+docker exec "leaf1-${ID}" ip link set obs1 up
 kill "${sub_pid}" 2>/dev/null || true
 if ! grep -q 'oper-status: UP' "${gnmi_out}" || ! grep -q 'oper-status: DOWN' "${gnmi_out}"; then
     fail "gNMI ON_CHANGE: $(cat "${gnmi_out}")"

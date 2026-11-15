@@ -51,8 +51,21 @@ def _parse_text(name: str, value: str | None, default: str, pattern: re.Pattern[
     return text
 
 
-def load_settings(env: dict[str, str], hostname: str = "tarvos") -> LldpSettings:
-    """Build settings; invalid input is logged and LLDP stays off rather than half-configured."""
+def node_hostname() -> str:
+    """The container hostname (RTR-1, leaf2, ...) as an LLDP system name: short form,
+    characters LLDP_SYSTEM_NAME does not accept replaced by '-', "tarvos" if empty."""
+    short = socket.gethostname().split(".")[0]
+    name = re.sub(r"[^A-Za-z0-9_.-]", "-", short)[:64]
+    return name or "tarvos"
+
+
+def load_settings(env: dict[str, str], hostname: str | None = None) -> LldpSettings:
+    """Build settings; invalid input is logged and LLDP stays off rather than half-configured.
+
+    The system name defaults to the container hostname: every caller (boot script and
+    the runtime backend) must agree, or the backend re-applies another name."""
+    if hostname is None:
+        hostname = node_hostname()
     disabled = LldpSettings(False, DEFAULT_INTERFACES, 30, 4, hostname, DEFAULT_DESCRIPTION)
     try:
         enabled = parse_choice("LLDP_ENABLED", env.get("LLDP_ENABLED"), "yes", ("yes", "no"))
@@ -98,7 +111,7 @@ def render(settings: LldpSettings) -> str:
 
 def main() -> int:
     root = Path(os.environ.get("TARVOS_ROOT", "/"))
-    settings = load_settings(dict(os.environ), socket.gethostname().split(".")[0] or "tarvos")
+    settings = load_settings(dict(os.environ))
     if not settings.enabled:
         log("LLDP disabled")
         return EXIT_DISABLED

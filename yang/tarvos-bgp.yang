@@ -43,7 +43,9 @@ module tarvos-bgp {
   revision 2026-11-14 {
     description
       "Operational state: neighbours per instance, EVPN VNIs, EVPN route
-       counts and routes.";
+       counts and routes. Tarvos 2.1.1: units stated in the state leaf
+       descriptions; cluster-id, graceful-restart, listen-range,
+       listen-limit, local-as, remove-private-as, as-override.";
   }
   revision 2026-11-13 {
     description
@@ -105,7 +107,7 @@ module tarvos-bgp {
         units "seconds";
         mandatory true;
         description
-          "Keepalive interval.";
+          "Keepalive interval (seconds).";
       }
       leaf hold-time {
         type uint16 {
@@ -114,7 +116,7 @@ module tarvos-bgp {
         units "seconds";
         mandatory true;
         description
-          "Hold time.";
+          "Hold time (seconds).";
       }
     }
   }
@@ -187,6 +189,35 @@ module tarvos-bgp {
       type boolean;
       description
         "Advertise the extended next-hop capability (RFC 8950).";
+    }
+    container local-as {
+      presence "Present the neighbor with another local AS";
+      description
+        "Local AS presented to this neighbor instead of the instance AS
+         ('neighbor X local-as N [no-prepend [replace-as]]'), for AS
+         migrations.";
+      leaf asn {
+        type ttypes:as-number;
+        mandatory true;
+        description
+          "AS presented to the neighbor.";
+      }
+      leaf no-prepend {
+        type boolean;
+        default "false";
+        description
+          "Do not prepend the local AS to routes received from the neighbor.";
+      }
+      leaf replace-as {
+        type boolean;
+        must ". = 'false' or ../no-prepend = 'true'" {
+          error-message "replace-as requires no-prepend";
+        }
+        default "false";
+        description
+          "Send only the local AS (not the instance AS) in the AS path of
+           routes advertised to the neighbor.";
+      }
     }
     uses timers;
 
@@ -267,6 +298,24 @@ module tarvos-bgp {
         }
         description
           "Send a default route to the neighbor.";
+      }
+      leaf remove-private-as {
+        type boolean;
+        must ". = 'false' or ../name != 'l2vpn-evpn'" {
+          error-message "remove-private-as does not apply to l2vpn-evpn";
+        }
+        description
+          "Remove private AS numbers from the AS path of routes advertised to
+           this (eBGP) neighbor.";
+      }
+      leaf as-override {
+        type boolean;
+        must ". = 'false' or ../name != 'l2vpn-evpn'" {
+          error-message "as-override does not apply to l2vpn-evpn";
+        }
+        description
+          "Replace the neighbor's AS by the local AS in advertised AS paths
+           (hub-and-spoke designs reusing one AS).";
       }
     }
   }
@@ -491,8 +540,8 @@ module tarvos-bgp {
         type uint64;
         units "seconds";
         description
-          "Time since the session was established; only present while it
-           is established.";
+          "Time since the session was established, in seconds (for example 23
+           after 23 seconds); only present while it is established.";
       }
       leaf local-address {
         type inet:ip-address-no-zone;
@@ -513,13 +562,13 @@ module tarvos-bgp {
         type uint16;
         units "seconds";
         description
-          "Negotiated hold time.";
+          "Negotiated hold time (seconds).";
       }
       leaf keepalive {
         type uint16;
         units "seconds";
         description
-          "Negotiated keepalive interval.";
+          "Negotiated keepalive interval (seconds).";
       }
       leaf connections-established {
         type yang:counter32;
@@ -934,6 +983,45 @@ module tarvos-bgp {
         description
           "Allow multipath across different neighboring ASes
            ('bgp bestpath as-path multipath-relax').";
+      }
+      leaf cluster-id {
+        type inet:ipv4-address-no-zone;
+        description
+          "Route reflector cluster ID (default: the router ID). Set the same
+           value on redundant route reflectors of one cluster. FRR resets the
+           BGP sessions when it changes.";
+      }
+      leaf graceful-restart {
+        type boolean;
+        description
+          "Enable graceful restart (RFC 4724) for this instance. FRR applies
+           it to sessions established afterwards.";
+      }
+      list listen-range {
+        key "prefix";
+        description
+          "Dynamic neighbors: accept sessions from any address of the prefix,
+           configured from a peer group ('bgp listen range').";
+        leaf prefix {
+          type inet:ip-prefix;
+          description
+            "Range of accepted peer addresses.";
+        }
+        leaf peer-group {
+          type leafref {
+            path "../../peer-group/name";
+          }
+          mandatory true;
+          description
+            "Peer group the dynamic neighbors belong to (it carries remote-as).";
+        }
+      }
+      leaf listen-limit {
+        type uint16 {
+          range "1..65535";
+        }
+        description
+          "Maximum number of dynamic neighbors (FRR default 100).";
       }
       uses timers;
 

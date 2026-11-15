@@ -24,6 +24,15 @@ fi
 
 ip link show "${IFACE}" >/dev/null 2>&1 || { log "WARNING: ${IFACE} not found, skipping"; exit 0; }
 
+# The management network is the one with the default route. If it is not on ${IFACE},
+# interface names probably moved (Docker may reorder eth0/eth1/... on restart when a
+# container has several networks: pin them with the endpoint driver option
+# com.docker.network.endpoint.ifname, or set MGMT_INTERFACE).
+default_dev="$(ip -4 route show default | awk '/default/ {for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')"
+if [ -n "${default_dev}" ] && [ "${default_dev}" != "${IFACE}" ]; then
+    log "WARNING: the default route is on ${default_dev}, not on ${IFACE} (MGMT_INTERFACE): interface names may have moved"
+fi
+
 if [ "$(ip -o link show "${IFACE}" | grep -c "master ${VRF} ")" -gt 0 ]; then
     log "${IFACE} already in VRF ${VRF}"
     exit 0
@@ -46,6 +55,13 @@ fi
 
 [ -z "${gw4}" ] || ip -4 route replace default via "${gw4}" dev "${IFACE}" table "${TABLE}" || log "WARNING: IPv4 default route not restored"
 [ -z "${gw6}" ] || ip -6 route replace default via "${gw6}" dev "${IFACE}" table "${TABLE}" || log "WARNING: IPv6 default route not restored"
+
+# Remember the management gateways: netdev_sync puts a management default route back if
+# it disappears (Docker moves the container's default gateway, and removes the route,
+# when a network is connected after boot).
+mkdir -p /run/tarvos
+printf 'MGMT_VRF_TABLE=%s\nMGMT_INTERFACE=%s\nMGMT_GW4=%s\nMGMT_GW6=%s\n' \
+    "${TABLE}" "${IFACE}" "${gw4}" "${gw6}" >/run/tarvos/mgmt-vrf.env
 
 # Outbound connections (syslog, TACACS+) from sockets not bound to the VRF only consult
 # the main table, which no longer holds the management routes: fall through to them.

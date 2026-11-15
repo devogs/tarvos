@@ -12,6 +12,12 @@ after the container started) are picked up.
 
 The state of each configured VRF and VNI (device status, members, remote VTEPs) is
 served as operational data, read from the kernel on every request.
+
+Every Tarvos VRF table also gets an ``unreachable default`` route at the highest metric
+(protocol ``tarvos``, 250): without it, a lookup that misses in a tenant table falls
+through to the main table and to the management VRF fallback rule (mgmt_vrf.sh), so
+tenant traffic could leave through the management interface. Any real default route
+(EVPN type-5, static) has a lower metric and wins.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -30,13 +37,18 @@ from typing import Any
 sys.path.insert(0, os.environ.get("SCRIPTS_DIR", "/opt/tarvos/scripts"))
 
 from tarvos_common import log as _log  # noqa: E402
+from tarvos_common import operator_message  # noqa: E402
 
 MODULES = ("tarvos-vrf", "tarvos-vxlan")
 ALIAS = "tarvos"
 DEFAULT_PORT = 4789
+DEFAULT_MTU = 1450  # tarvos-vxlan default: 1500-byte underlay minus 50 of VXLAN/IPv4
 RECONCILE_INTERVAL = float(os.environ.get("NETDEV_RECONCILE_INTERVAL", "10"))
 IN_FLIGHT_TIMEOUT = 120.0
 KIND_ORDER = {"vxlan": 0, "bridge": 1, "vrf": 2}  # deletion order; creation is reversed
+# VRF isolation route: rt_protos number owned by Tarvos, metric as in the kernel VRF docs.
+ROUTE_PROTO = 250
+ISOLATION_METRIC = 4278198272
 
 
 class NetdevError(ValueError):
@@ -100,7 +112,7 @@ def desired_state(
     conf = vxlan.get("vxlan") or {}
     local = conf.get("source-address")
     port = int(conf.get("udp-port", DEFAULT_PORT))
-    mtu = int(conf["mtu"]) if conf.get("mtu") else None
+    mtu = int(conf.get("mtu") or DEFAULT_MTU)
     segments = [(entry, True) for entry in conf.get("l2vni") or []]
     segments += [(entry, False) for entry in conf.get("l3vni") or []]
     for entry, layer2 in segments:
@@ -244,6 +256,105 @@ def plan(
     return commands, warnings
 
 
+def isolation_plan(
+    desired: Desired, routes: dict[int, list[dict[str, Any]]]
+) -> tuple[list[list[str]], list[list[str]]]:
+    """Commands keeping one Tarvos ``unreachable default`` in each Tarvos VRF table.
+
+    ``routes`` maps the address family (4, 6) to ``ip -j -<f> route show table all
+    type unreachable`` entries. Returns (IPv4 commands, IPv6 commands): IPv6 is best
+    effort, a container without IPv6 must not refuse VRF configuration.
+    """
+    tables = {d.table for d in desired.devices.values() if d.kind == "vrf"}
+    out: dict[int, list[list[str]]] = {4: [], 6: []}
+    for family in (4, 6):
+        have: set[int] = set()
+        for route in routes.get(family) or []:
+            if route.get("dst") != "default" or str(route.get("protocol")) not in (
+                str(ROUTE_PROTO), "tarvos"
+            ):
+                continue
+            table = route.get("table")
+            if not str(table).isdigit():
+                continue
+            have.add(int(table))
+        base = ["ip", f"-{family}", "route"]
+        spec = ["unreachable", "default", "metric", str(ISOLATION_METRIC)]
+        for table in sorted(tables - have):
+            out[family].append(
+                [*base, "replace", *spec, "table", str(table), "proto", str(ROUTE_PROTO)]
+            )
+        for table in sorted(have - tables):
+            out[family].append([*base, "del", *spec, "table", str(table)])
+    return out[4], out[6]
+
+
+def isolation_routes() -> dict[int, list[dict[str, Any]]]:
+    routes: dict[int, list[dict[str, Any]]] = {}
+    for family in (4, 6):
+        try:
+            routes[family] = _ip_json(f"-{family}", "route", "show", "table", "all",
+                                      "type", "unreachable")  # fmt: skip
+        except NetdevError:
+            routes[family] = []  # IPv6 disabled
+    return routes
+
+
+MGMT_STATE = os.environ.get("MGMT_VRF_STATE", "/run/tarvos/mgmt-vrf.env")
+
+
+def read_mgmt_state(path: str = MGMT_STATE) -> dict[str, str]:
+    """Gateways mgmt_vrf.sh moved into the management table at boot (KEY=value lines)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return {}
+    return dict(line.split("=", 1) for line in lines if "=" in line)
+
+
+def mgmt_route_plan(
+    state: dict[str, str], routes: dict[int, list[dict[str, Any]]]
+) -> list[list[str]]:
+    """Commands restoring the management default route(s) recorded at boot when the
+    management table has none at all (``routes``: ``ip -j -<f> route show table <t>
+    default``). A default route present in that table, whatever it is, is left alone."""
+    table, iface = state.get("MGMT_VRF_TABLE", ""), state.get("MGMT_INTERFACE", "")
+    if not table.isdigit() or not iface:
+        return []
+    commands = []
+    for family, key in ((4, "MGMT_GW4"), (6, "MGMT_GW6")):
+        gateway = state.get(key, "")
+        if not gateway or routes.get(family):
+            continue
+        try:
+            ipaddress.ip_address(gateway)
+        except ValueError:
+            continue
+        commands.append(["ip", f"-{family}", "route", "replace", "default", "via", gateway,
+                         "dev", iface, "table", table])  # fmt: skip
+    return commands
+
+
+def guard_mgmt_route() -> None:
+    state = read_mgmt_state()
+    if not state:
+        return
+    routes: dict[int, list[dict[str, Any]]] = {}
+    for family in (4, 6):
+        try:
+            routes[family] = _ip_json(f"-{family}", "route", "show", "table",
+                                      state.get("MGMT_VRF_TABLE", "0"), "default")  # fmt: skip
+        except NetdevError:
+            routes[family] = [{"unknown": True}]  # cannot tell: do nothing
+    for command in mgmt_route_plan(state, routes):
+        try:
+            execute([command])
+            log(f"management default route restored ({' '.join(command[3:])})")
+        except NetdevError as exc:
+            log(f"WARNING: cannot restore the management default route: {exc}")
+
+
 def _ip_json(*args: str) -> list[dict[str, Any]]:
     result = subprocess.run(
         ["ip", "-j", *args], capture_output=True, text=True, timeout=10, check=False
@@ -275,11 +386,43 @@ def fdb_state() -> list[dict[str, Any]]:
     return json.loads(result.stdout or "[]")
 
 
-def execute(commands: list[list[str]]) -> None:
+def batches(commands: list[list[str]]) -> list[tuple[str, list[list[str]]]]:
+    """Consecutive commands of the same tool (ip, bridge), order kept: one process per
+    batch ("ip -batch -") instead of one per command (100 VNIs are 400+ commands)."""
+    out: list[tuple[str, list[list[str]]]] = []
     for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+        tool = command[0]
+        if out and out[-1][0] == tool and tool in ("ip", "bridge"):
+            out[-1][1].append(command)
+        else:
+            out.append((tool, [command]))
+    return out
+
+
+def execute(commands: list[list[str]]) -> None:
+    for tool, group in batches(commands):
+        if tool not in ("ip", "bridge") or len(group) == 1:
+            for command in group:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30,
+                                        check=False)  # fmt: skip
+                if result.returncode != 0:
+                    raise NetdevError(f"{' '.join(command)}: {result.stderr.strip() or 'failed'}")
+            continue
+        # Global options (ip -4/-6) must come before -batch; they are per command here,
+        # so batch only commands without them.
+        if any(c[1].startswith("-") for c in group):
+            for command in group:
+                execute([command])
+            continue
+        script = "".join(" ".join(c[1:]) + "\n" for c in group)
+        result = subprocess.run([tool, "-batch", "-"], input=script, capture_output=True,
+                                text=True, timeout=120, check=False)  # fmt: skip
         if result.returncode != 0:
-            raise NetdevError(f"{' '.join(command)}: {result.stderr.strip() or 'failed'}")
+            failed = re.search(r"Command failed -:(\d+)", result.stderr)
+            index = int(failed.group(1)) - 1 if failed else None
+            what = " ".join(group[index]) if index is not None and index < len(group) else tool
+            message = result.stderr.strip().splitlines()[0] if result.stderr.strip() else "failed"
+            raise NetdevError(f"{what}: {message}")
 
 
 # -- operational state -----------------------------------------------------------------
@@ -426,6 +569,15 @@ class Agent:
             commands, warnings = plan(desired, links, addresses)
             changes = [c for c in commands if c[-1] != "up" and c[:3] != ["bridge", "link", "set"]]
             execute(commands)
+            v4, v6 = isolation_plan(desired, isolation_routes())
+            execute(v4)
+            for command in v6:
+                try:
+                    execute([command])
+                except NetdevError as exc:
+                    if not quiet:
+                        log(f"WARNING: IPv6 VRF isolation route: {exc}")
+            changes += v4 + v6
             self.data = data
             if not quiet:
                 for warning in warnings:
@@ -480,7 +632,7 @@ def main() -> int:
                     with connection.start_session("running") as running:
                         agent.reconcile(running, quiet=True)
             except NetdevError as exc:
-                error = SysrepoCallbackFailedError(str(exc))
+                error = SysrepoCallbackFailedError(operator_message(str(exc)))
                 event_session.set_error(error)
                 raise error from exc
 
@@ -502,6 +654,10 @@ def main() -> int:
                 log(f"WARNING: no operational data for {xpath} ({exc})")
         log("serving tarvos-vrf, tarvos-vxlan")
         while not stop.wait(RECONCILE_INTERVAL):
+            try:
+                guard_mgmt_route()
+            except Exception as exc:  # keep the loop alive
+                log(f"ERROR: management route guard: {exc}")
             if agent.busy():
                 continue
             try:
