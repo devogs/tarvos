@@ -91,11 +91,20 @@ class Desired:
 
 
 def desired_state(
-    vrfs: dict[str, Any], vxlan: dict[str, Any], reserved_vrf: str, reserved_table: int
+    vrfs: dict[str, Any],
+    vxlan: dict[str, Any],
+    reserved_vrf: str,
+    reserved_table: int,
+    reserved_ports: frozenset[str] = frozenset(),
 ) -> Desired:
     out = Desired()
 
     def add_member(port: str, master: str) -> None:
+        if port in reserved_ports:
+            raise NetdevError(
+                f"{port} is the management interface (VRF {reserved_vrf}) and cannot be "
+                f"a member of {master}"
+            )
         if out.members.get(port, master) != master:
             raise NetdevError(f"{port} cannot be in both {out.members[port]} and {master}")
         out.members[port] = master
@@ -557,8 +566,13 @@ class Agent:
                     data[name] = session.get_data(xpath) or {}
                 except SysrepoNotFoundError:
                     data[name] = {}
+        mgmt_port = read_mgmt_state().get("MGMT_INTERFACE", "")
         desired = desired_state(
-            data["tarvos-vrf"], data["tarvos-vxlan"], self.reserved_vrf, self.reserved_table
+            data["tarvos-vrf"],
+            data["tarvos-vxlan"],
+            self.reserved_vrf,
+            self.reserved_table,
+            frozenset({mgmt_port, self.reserved_vrf} - {""}),
         )
         return desired, data
 
