@@ -158,7 +158,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SYSREPO_REPOSITORY_PATH=/var/lib/sysrepo \
     PATH=/opt/venv/bin:$PATH \
     YANG_DIR=/opt/tarvos/yangs \
-    TARVOS_FRR_VERSION=${FRR_VERSION}
+    TARVOS_FRR_VERSION=${FRR_VERSION} \
+    LANG=C.UTF-8
 
 COPY --from=builder /usr/share/keyrings/frrouting.gpg /usr/share/keyrings/frrouting.gpg
 
@@ -177,7 +178,8 @@ RUN apt-get update \
         iputils-ping iputils-tracepath iputils-arping traceroute mtr-tiny \
         bind9-dnsutils bind9-host tcpdump ethtool netcat-openbsd curl iperf3 conntrack \
         libcap2-bin bash-completion less \
-    && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
+    && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* \
+    && sed -i '/^[[:space:]]*AcceptEnv/d' /etc/ssh/sshd_config
 
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /var/lib/sysrepo /var/lib/sysrepo

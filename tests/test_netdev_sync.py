@@ -279,3 +279,10 @@ def test_batch_error_names_the_failing_command(monkeypatch):
     monkeypatch.setattr(netdev_sync.subprocess, "run", run)
     with pytest.raises(NetdevError, match="ip link del br9: Cannot find device"):
         netdev_sync.execute([["ip", "link", "del", "vx9"], ["ip", "link", "del", "br9"]])
+
+
+def test_management_interface_cannot_be_a_member_port():
+    vrfs = {"vrfs": {"vrf": [{"name": "RED", "table": 1010, "interface": ["eth0"]}]}}
+    with pytest.raises(NetdevError, match="management interface"):
+        desired_state(vrfs, {}, "mgmt", 1001, frozenset({"eth0", "mgmt"}))
+    assert desired_state(vrfs, {}, "mgmt", 1001).members == {"eth0": "RED"}
