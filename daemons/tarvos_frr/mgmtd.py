@@ -14,8 +14,9 @@ interfaces, VRFs, ... keeps working next to NETCONF.
 from __future__ import annotations
 
 import json
+import os
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Protocol
 
 # Modules with top-level data handled by mgmtd in FRR 10.7, and the modules that only
@@ -37,7 +38,8 @@ MAX_COMMAND = 7000
 _WHITESPACE = re.compile(r"\s")
 # mgmtd refuses to delete the entry of an interface or VRF that exists in the kernel
 # ("only inactive interfaces can be deleted"), like the CLI does: such entries are
-# cleared instead (replaced by their key alone).
+# cleared instead (replaced by their key alone). An entry with no kernel device (a VRF
+# or interface that only exists in FRR's configuration) is really deleted.
 _KEEP_ENTRY = re.compile(r"^/(frr-interface:lib/interface|frr-vrf:lib/vrf)\[name='([^']+)'\]$")
 
 # Operational data served from mgmtd: (module, xpath). Subscriptions are made on the
@@ -108,12 +110,23 @@ def to_dict_form(value: Any) -> Any:
     return value
 
 
-def edit_commands(old: Mapping[str, str], new: Mapping[str, str]) -> list[str]:
-    """mgmt commands turning the ``old`` units into the ``new`` ones (removals first)."""
+def kernel_device_exists(name: str) -> bool:
+    return os.path.exists(f"/sys/class/net/{name}")
+
+
+def edit_commands(
+    old: Mapping[str, str],
+    new: Mapping[str, str],
+    device_exists: Callable[[str], bool] = lambda name: True,
+) -> list[str]:
+    """mgmt commands turning the ``old`` units into the ``new`` ones (removals first).
+
+    ``device_exists(name)``: whether the interface or VRF is in the kernel (such an entry
+    can only be cleared, not deleted)."""
     commands: list[str] = []
     for xpath in sorted(set(old) - set(new), key=len, reverse=True):
         keep = _KEEP_ENTRY.match(xpath)
-        if keep:
+        if keep and device_exists(keep.group(2)):
             module, name = keep.group(1).split(":")[0], keep.group(2)
             node = keep.group(1).rsplit("/", 1)[1]
             data = encode(json.dumps({f"{module}:{node}": [{"name": name}]}, separators=(",", ":")))

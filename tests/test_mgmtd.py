@@ -67,6 +67,13 @@ def test_interface_and_vrf_entries_are_cleared_not_deleted():
     ]
 
 
+def test_entry_without_kernel_device_is_deleted():
+    old = {"/frr-vrf:lib/vrf[name='VRF_TEST']": "{y}", "/frr-vrf:lib/vrf[name='RED']": "{y}"}
+    commands = edit_commands(old, {}, lambda name: name == "RED")
+    assert "mgmt edit remove /frr-vrf:lib/vrf[name='VRF_TEST']" in commands
+    assert any(c.startswith("mgmt edit replace /frr-vrf:lib/vrf[name='RED']") for c in commands)
+
+
 def test_xpath_with_spaces_is_refused():
     with pytest.raises(MgmtdError):
         edit_commands({}, {"/m:a/x[k='a b']": "{}"})

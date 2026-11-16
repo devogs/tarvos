@@ -89,7 +89,9 @@ class FrrSync:
         new = {m: self.native_units(session, m) for m in selected}
         commands: list[str] = []
         for module in selected:
-            commands += mgmtd.edit_commands(self.native.get(module, {}), new[module])
+            commands += mgmtd.edit_commands(
+                self.native.get(module, {}), new[module], mgmtd.kernel_device_exists
+            )
         if not commands:
             return False
         self.frr.mgmt_transaction(commands)

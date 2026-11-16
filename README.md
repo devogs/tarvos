@@ -65,6 +65,7 @@ The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin
 | `FRR_DAEMONS` | FRR daemons to start, e.g. `bgpd`, `bgpd,bfdd` or `[bgpd, ospfd]` (names: bgpd, ospfd, ospf6d, ripd, ripngd, isisd, pimd, pim6d, ldpd, nhrpd, eigrpd, babeld, sharpd, pbrd, bfdd, fabricd, vrrpd, pathd). mgmtd, zebra and staticd always run. NETCONF configuration for a daemon that is not running is refused |
 | `LLDP_ENABLED`, `LLDP_INTERFACES`, `LLDP_TX_INTERVAL`, `LLDP_TX_HOLD`, `LLDP_SYSTEM_NAME`, `LLDP_SYSTEM_DESCRIPTION` | LLDP neighbour discovery (lldpd, on by default on every interface; `LLDP_INTERFACES` is an lldpd pattern such as `eth*,!eth0`). Inspect with `lldpcli show neighbors` or over NETCONF |
 | `TELEMETRY_ENABLED`, `TELEMETRY_EXCLUDE`, `TELEMETRY_SYNC_INTERVAL`, `TELEMETRY_LISTEN_VRF` | eBPF telemetry agent, see [eBPF telemetry](#ebpf-telemetry) |
+| `CONSOLE_SHELL` | `yes` (default): with a TTY (GNS3 telnet console, `docker run -it`), a login shell as `admin` is offered on the console; `no` keeps the console log-only |
 | `PROMETHEUS_ENABLED`, `PROMETHEUS_PORT`, `PROMETHEUS_ROUTING_METRICS`, `PROMETHEUS_KERNEL_METRICS`, `PROMETHEUS_STATE_CACHE` | `/metrics` endpoint and which series it serves, see [Prometheus](#prometheus) |
 | `GNMI_ENABLED`, `GNMI_PORT`, `GNMI_TLS`, `GNMI_TLS_CERT`, `GNMI_TLS_KEY` | gNMI server, see [gNMI](#gnmi) |
 | `NETCONF_TIMEOUT` | Seconds a NETCONF request may take, backends included (default 120) |
@@ -85,7 +86,7 @@ FRR 10.7's `mgmtd` is a YANG transaction engine (candidate/running datastores, v
 
 Ownership rules, so NETCONF and the CLI can coexist:
 
-- mgmtd path: each list entry (interface, VRF, static route set, ...) configured over NETCONF is owned by NETCONF; entries never configured over NETCONF keep their CLI configuration. Removing an interface or VRF entry clears its configuration (mgmtd refuses to delete an interface that exists).
+- mgmtd path: each list entry (interface, VRF, static route set, ...) configured over NETCONF is owned by NETCONF; entries never configured over NETCONF keep their CLI configuration. Removing an interface or VRF entry that exists in the kernel clears its configuration (mgmtd refuses to delete it); an entry with no kernel device is deleted.
 - vtysh path: once a module is configured, Tarvos owns its block types (for example every `router bgp`, or the `ip ospf ...` lines of every interface); other configuration is left alone. `frr-reload` only sends the differences, so unchanged sessions are not reset.
 - NETCONF configuration lives in the Sysrepo datastores: `<copy-config>` from running to startup makes it survive a restart of the container, and Tarvos re-applies it to FRR at boot. `/etc/frr/frr.conf` is not written.
 
