@@ -1,7 +1,15 @@
 import json
 
 import pytest
-from tarvos_frr.mgmtd import MgmtdError, collect_units, edit_commands, encode, to_dict_form
+from tarvos_frr.mgmtd import (
+    MgmtdError,
+    cleared_entries,
+    collect_units,
+    edit_commands,
+    encode,
+    prune_commands,
+    to_dict_form,
+)
 
 
 class _Node:
@@ -67,6 +75,13 @@ def test_interface_and_vrf_entries_are_cleared_not_deleted():
     ]
 
 
+def test_entry_without_kernel_device_is_deleted():
+    old = {"/frr-vrf:lib/vrf[name='VRF_TEST']": "{y}", "/frr-vrf:lib/vrf[name='RED']": "{y}"}
+    commands = edit_commands(old, {}, lambda name: name == "RED")
+    assert "mgmt edit remove /frr-vrf:lib/vrf[name='VRF_TEST']" in commands
+    assert any(c.startswith("mgmt edit replace /frr-vrf:lib/vrf[name='RED']") for c in commands)
+
+
 def test_xpath_with_spaces_is_refused():
     with pytest.raises(MgmtdError):
         edit_commands({}, {"/m:a/x[k='a b']": "{}"})
@@ -81,3 +96,14 @@ def test_to_dict_form_converts_empty_leaves():
     data = {"a": [{"fib": [None], "n": [1, 2]}], "b": [None]}
     assert to_dict_form(data) == {"a": [{"fib": None, "n": [1, 2]}], "b": None}
     assert to_dict_form(None) is None
+
+
+def test_stubs_are_pruned_once_the_device_is_gone():
+    vrf = "/frr-vrf:lib/vrf[name='RED']"
+    assert cleared_entries({vrf: "{y}"}, {}, lambda name: True) == {vrf}
+    assert cleared_entries({vrf: "{y}"}, {}, lambda name: False) == set()
+    assert prune_commands({vrf}, lambda name: True) == ([], set())
+    assert prune_commands({vrf}, lambda name: False) == (
+        [f"mgmt edit remove {vrf}"],
+        {vrf},
+    )

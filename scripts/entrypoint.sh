@@ -192,6 +192,22 @@ done
 
 log "Tarvos is up"
 
+# Console shell: GNS3's telnet console (and docker run -it / docker attach) is attached to
+# this process, which otherwise only prints logs. With a TTY on stdin, offer a login
+# shell as "admin" there, respawned when it exits. CONSOLE_SHELL=no disables it.
+if [ -t 0 ]; then
+    case "${CONSOLE_SHELL:-yes}" in
+        no | false | 0) ;;
+        *)
+            (
+                while [ "${shutting_down}" -eq 0 ]; do
+                    setsid -c su -l admin || sleep 1
+                done
+            ) &
+            ;;
+    esac
+fi
+
 # --- Supervise: restart any daemon that exits; stop on a critical crash loop -------
 while true; do
     wait -n || true

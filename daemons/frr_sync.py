@@ -65,6 +65,9 @@ class FrrSync:
         self.read = read or _get_dict
         self.lock = threading.RLock()
         self.native: dict[str, dict[str, str]] = {}  # root module -> units
+        # Entries cleared to a name-only stub because their kernel device existed: deleted
+        # once the device is gone (a tarvos-vrf change removes the kernel VRF).
+        self.stubs: set[str] = set()
         self.rendered: dict[str, Rendered] = {}  # renderer key -> last applied
         self.dirty = True  # FRR state unknown: force a reload
         self.bgp_state = state.BgpState(frr)
@@ -88,13 +91,28 @@ class FrrSync:
         selected = [m for m in mgmtd.ROOT_MODULES if modules is None or m in modules]
         new = {m: self.native_units(session, m) for m in selected}
         commands: list[str] = []
+        cleared: set[str] = set()
         for module in selected:
-            commands += mgmtd.edit_commands(self.native.get(module, {}), new[module])
+            old = self.native.get(module, {})
+            commands += mgmtd.edit_commands(old, new[module], mgmtd.kernel_device_exists)
+            cleared |= mgmtd.cleared_entries(old, new[module], mgmtd.kernel_device_exists)
         if not commands:
             return False
         self.frr.mgmt_transaction(commands)
         self.native.update(new)
+        self.stubs |= cleared
+        for module in selected:
+            self.stubs -= set(new[module])  # configured over NETCONF again
         return True
+
+    def prune_stubs(self) -> None:
+        """Delete the cleared entries whose kernel device has disappeared."""
+        with self.lock:
+            commands, pruned = mgmtd.prune_commands(self.stubs, mgmtd.kernel_device_exists)
+            if commands:
+                self.frr.mgmt_transaction(commands)
+                self.stubs -= pruned
+                log(f"removed {len(pruned)} stale FRR entr{'y' if len(pruned) == 1 else 'ies'}")
 
     # -- rendered (frr-reload) -------------------------------------------------------
 
@@ -270,6 +288,28 @@ def main() -> int:
             except Exception as exc:
                 log(f"ERROR: initial configuration: {exc}")
                 sync.resync(running)
+
+        def prune_callback(_session: Any, event: str, _req_id: int, _module: Any) -> None:
+            # tarvos-vrf removes kernel VRFs in its change event; FRR needs a moment to
+            # see the device go before mgmtd accepts the deletion of its entry.
+            if event != "done":
+                return
+            for attempt in range(6):
+                try:
+                    sync.prune_stubs()
+                    return
+                except Exception as exc:
+                    if attempt == 5:
+                        log(f"WARNING: removing stale FRR entries: {exc}")
+                    else:
+                        time.sleep(0.5)
+
+        try:
+            session.subscribe_module_change_unsafe(
+                "tarvos-vrf", None, prune_callback, private_data="tarvos-vrf"
+            )
+        except SysrepoError as exc:
+            log(f"WARNING: tarvos-vrf is not available ({exc})")
 
         modules = list(mgmtd.MODULES)
         for renderer in sync.renderers:

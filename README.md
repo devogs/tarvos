@@ -65,6 +65,7 @@ The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin
 | `FRR_DAEMONS` | FRR daemons to start, e.g. `bgpd`, `bgpd,bfdd` or `[bgpd, ospfd]` (names: bgpd, ospfd, ospf6d, ripd, ripngd, isisd, pimd, pim6d, ldpd, nhrpd, eigrpd, babeld, sharpd, pbrd, bfdd, fabricd, vrrpd, pathd). mgmtd, zebra and staticd always run. NETCONF configuration for a daemon that is not running is refused |
 | `LLDP_ENABLED`, `LLDP_INTERFACES`, `LLDP_TX_INTERVAL`, `LLDP_TX_HOLD`, `LLDP_SYSTEM_NAME`, `LLDP_SYSTEM_DESCRIPTION` | LLDP neighbour discovery (lldpd, on by default on every interface; `LLDP_INTERFACES` is an lldpd pattern such as `eth*,!eth0`). Inspect with `lldpcli show neighbors` or over NETCONF |
 | `TELEMETRY_ENABLED`, `TELEMETRY_EXCLUDE`, `TELEMETRY_SYNC_INTERVAL`, `TELEMETRY_LISTEN_VRF` | eBPF telemetry agent, see [eBPF telemetry](#ebpf-telemetry) |
+| `CONSOLE_SHELL` | `yes` (default): with a TTY (GNS3 telnet console, `docker run -it`), a login shell as `admin` is offered on the console; `no` keeps the console log-only |
 | `PROMETHEUS_ENABLED`, `PROMETHEUS_PORT`, `PROMETHEUS_ROUTING_METRICS`, `PROMETHEUS_KERNEL_METRICS`, `PROMETHEUS_STATE_CACHE` | `/metrics` endpoint and which series it serves, see [Prometheus](#prometheus) |
 | `GNMI_ENABLED`, `GNMI_PORT`, `GNMI_TLS`, `GNMI_TLS_CERT`, `GNMI_TLS_KEY` | gNMI server, see [gNMI](#gnmi) |
 | `NETCONF_TIMEOUT` | Seconds a NETCONF request may take, backends included (default 120) |
@@ -85,7 +86,7 @@ FRR 10.7's `mgmtd` is a YANG transaction engine (candidate/running datastores, v
 
 Ownership rules, so NETCONF and the CLI can coexist:
 
-- mgmtd path: each list entry (interface, VRF, static route set, ...) configured over NETCONF is owned by NETCONF; entries never configured over NETCONF keep their CLI configuration. Removing an interface or VRF entry clears its configuration (mgmtd refuses to delete an interface that exists).
+- mgmtd path: each list entry (interface, VRF, static route set, ...) configured over NETCONF is owned by NETCONF; entries never configured over NETCONF keep their CLI configuration. Removing an interface or VRF entry that exists in the kernel clears its configuration (mgmtd refuses to delete it); an entry with no kernel device is deleted.
 - vtysh path: once a module is configured, Tarvos owns its block types (for example every `router bgp`, or the `ip ospf ...` lines of every interface); other configuration is left alone. `frr-reload` only sends the differences, so unchanged sessions are not reset.
 - NETCONF configuration lives in the Sysrepo datastores: `<copy-config>` from running to startup makes it survive a restart of the container, and Tarvos re-applies it to FRR at boot. `/etc/frr/frr.conf` is not written.
 
@@ -396,6 +397,15 @@ What an operator can rely on (each point is a test of the campaigns):
 - The TACACS+ secret is written only to root-only (`0600`) PAM files and is never logged. Over NETCONF, `admin` can write it but not read it back.
 - NETCONF users are authenticated through PAM under their own name, so TACACS+ users need no per-user setup in Tarvos and appear by name in NETCONF logs. Access is controlled by NACM: `admin` has full access, TACACS+ users get `TACACS_NETCONF_ACCESS` (read-only by default; set `rw` to let them configure).
 - Both SSH `password` (ncclient, Ansible `netconf`) and `keyboard-interactive` (OpenSSH `ssh -s`, `netopeer2-cli`) go through the same PAM stack, so TACACS+ users work with either. Upstream libnetconf2 checks `password` against the local password file only; the image carries a small patch (`docker/patches/libnetconf2-password-pam.patch`) to route it through PAM.
+
+## Upgrading from 2.1.1
+
+2.1.2 fixes bugs found while testing VRFs and the console; existing `.env` files and NETCONF configurations keep working. Behaviour that changes:
+
+- **SSH locale:** `sshd` no longer accepts the client's `LANG`/`LC_*` and the image sets `LANG=C.UTF-8`. Before, a client forwarding `en_US.UTF-8` got a dozen `setlocale` warnings at every login.
+- **Console shell (new, on by default):** when the container has a TTY (GNS3's telnet console, `docker run -it`, `docker attach`), a login shell as `admin` is started on it and restarted if it exits. Daemon logs share that console. `CONSOLE_SHELL=no` restores the log-only console.
+- **VRF and interface entries are deleted for real:** removing a `frr-vrf` or `frr-interface` entry over NETCONF now deletes it when there is no kernel device. Before, a VRF that existed only in FRR's configuration stayed in `vtysh` as `inactive (configured)`. An entry whose device exists is still only cleared (mgmtd refuses to delete it), and is deleted when a `tarvos-vrf` change removes the device. A node restarted in between keeps such a cleared entry until `no vrf <name>` in `vtysh`.
+- **Management interface protected:** a `tarvos-vrf` edit putting the management interface (`eth0` by default) in another VRF, or a `tarvos-vxlan` edit using it as access port, is refused. Before, it was accepted and cut the node off its management VRF.
 
 ## Upgrading from 2.1.0
 
