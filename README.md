@@ -398,6 +398,15 @@ What an operator can rely on (each point is a test of the campaigns):
 - NETCONF users are authenticated through PAM under their own name, so TACACS+ users need no per-user setup in Tarvos and appear by name in NETCONF logs. Access is controlled by NACM: `admin` has full access, TACACS+ users get `TACACS_NETCONF_ACCESS` (read-only by default; set `rw` to let them configure).
 - Both SSH `password` (ncclient, Ansible `netconf`) and `keyboard-interactive` (OpenSSH `ssh -s`, `netopeer2-cli`) go through the same PAM stack, so TACACS+ users work with either. Upstream libnetconf2 checks `password` against the local password file only; the image carries a small patch (`docker/patches/libnetconf2-password-pam.patch`) to route it through PAM.
 
+## Upgrading from 2.1.1
+
+2.1.2 fixes bugs found while testing VRFs and the console; existing `.env` files and NETCONF configurations keep working. Behaviour that changes:
+
+- **SSH locale:** `sshd` no longer accepts the client's `LANG`/`LC_*` and the image sets `LANG=C.UTF-8`. Before, a client forwarding `en_US.UTF-8` got a dozen `setlocale` warnings at every login.
+- **Console shell (new, on by default):** when the container has a TTY (GNS3's telnet console, `docker run -it`, `docker attach`), a login shell as `admin` is started on it and restarted if it exits. Daemon logs share that console. `CONSOLE_SHELL=no` restores the log-only console.
+- **VRF and interface entries are deleted for real:** removing a `frr-vrf` or `frr-interface` entry over NETCONF now deletes it when there is no kernel device. Before, a VRF that existed only in FRR's configuration stayed in `vtysh` as `inactive (configured)`. An entry whose device exists is still only cleared (mgmtd refuses to delete it), and is deleted when a `tarvos-vrf` change removes the device. A node restarted in between keeps such a cleared entry until `no vrf <name>` in `vtysh`.
+- **Management interface protected:** a `tarvos-vrf` edit putting the management interface (`eth0` by default) in another VRF, or a `tarvos-vxlan` edit using it as access port, is refused. Before, it was accepted and cut the node off its management VRF.
+
 ## Upgrading from 2.1.0
 
 2.1.1 is a hardening release: existing `.env` files and NETCONF configurations keep working, and no action is required beyond the TACACS+ note below. Behaviour that changes:

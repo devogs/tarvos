@@ -123,6 +123,11 @@ jobs:
           }
           tests/integration/evpn.sh "$LOCAL_TAG"
 
+      - name: VRF and interface entries created and removed over NETCONF
+        run: |
+          sudo modprobe vrf
+          tests/integration/vrf.sh "$LOCAL_TAG"
+
       - name: Troubleshooting toolbox in every VRF (root, admin, TACACS+ account)
         run: tests/integration/tools.sh "$LOCAL_TAG"
 

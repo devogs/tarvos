@@ -52,6 +52,12 @@ echo "== SSH login with admin/admin"
 out="$(sshpass -p admin ssh "${SSH_OPTS[@]}" -p "${SSH_HOST_PORT}" admin@127.0.0.1 'echo tarvos-ok')"
 [ "${out}" = "tarvos-ok" ] || fail "SSH login returned: ${out}"
 
+echo "== SSH login with a client locale the image does not have: no setlocale warnings"
+# 2.1.1: the forwarded LC_* made every bash started at login (bash-completion) warn.
+err="$(LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 sshpass -p admin ssh "${SSH_OPTS[@]}" -o SendEnv="LANG LC_*" \
+    -p "${SSH_HOST_PORT}" admin@127.0.0.1 'bash -lic "true"' 2>&1 >/dev/null || true)"
+grep -qi 'setlocale' <<<"${err}" && fail "SSH login prints locale warnings: ${err}"
+
 echo "== NETCONF serves the tarvos and FRR native modules (ncclient)"
 python3 "$(dirname "$0")/netconf_caps.py" 127.0.0.1 "${NETCONF_HOST_PORT}" admin admin \
     tarvos-nftables tarvos-qos tarvos-aaa tarvos-lldp \

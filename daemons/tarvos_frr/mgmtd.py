@@ -143,6 +143,25 @@ def edit_commands(
     return commands
 
 
+def cleared_entries(
+    old: Mapping[str, str], new: Mapping[str, str], device_exists: Callable[[str], bool]
+) -> set[str]:
+    """Entries ``edit_commands`` clears to a name-only stub instead of deleting."""
+    return {
+        xpath
+        for xpath in set(old) - set(new)
+        if (keep := _KEEP_ENTRY.match(xpath)) and device_exists(keep.group(2))
+    }
+
+
+def prune_commands(
+    stubs: Iterable[str], device_exists: Callable[[str], bool]
+) -> tuple[list[str], set[str]]:
+    """Delete the stubs whose kernel device is gone: (mgmt commands, pruned xpaths)."""
+    pruned = {x for x in stubs if (k := _KEEP_ENTRY.match(x)) and not device_exists(k.group(2))}
+    return [f"mgmt edit remove {_check_xpath(x)}" for x in sorted(pruned)], pruned
+
+
 def _check_xpath(xpath: str) -> str:
     if _WHITESPACE.search(xpath):
         raise MgmtdError(f"{xpath}: list keys with spaces are not supported")
