@@ -68,6 +68,7 @@ The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin
 | `CONSOLE_SHELL` | `yes` (default): with a TTY (GNS3 telnet console, `docker run -it`), a login shell as `admin` is offered on the console; `no` keeps the console log-only |
 | `PROMETHEUS_ENABLED`, `PROMETHEUS_PORT`, `PROMETHEUS_ROUTING_METRICS`, `PROMETHEUS_KERNEL_METRICS`, `PROMETHEUS_STATE_CACHE` | `/metrics` endpoint and which series it serves, see [Prometheus](#prometheus) |
 | `GNMI_ENABLED`, `GNMI_PORT`, `GNMI_TLS`, `GNMI_TLS_CERT`, `GNMI_TLS_KEY` | gNMI server, see [gNMI](#gnmi) |
+| `NEIGH_REFRESH_ENABLED` | `yes` (default): keep the local hosts of every L2 VNI known by probing each STALE neighbor (one unicast ARP/ND request from the anycast gateway), see [Example: EVPN leaf](#example-evpn-leaf); `no` lets idle hosts age out |
 | `NETCONF_TIMEOUT` | Seconds a NETCONF request may take, backends included (default 120) |
 | `CRASH_LOOP_MAX`, `CRASH_LOOP_WINDOW` | Supervision: a critical daemon restarted more than `CRASH_LOOP_MAX` times (5) in `CRASH_LOOP_WINDOW` seconds (120) stops the container |
 | `SSH_PORT`, `NETCONF_PORT`, `LOG_LEVEL`, `YANG_DIR` | Runtime parameters |
@@ -124,7 +125,7 @@ Things the example takes for granted:
 
 - **Underlay reachability.** Every VTEP address (`source-address`, a loopback) must be reachable in the default VRF, and so must the next hop of every EVPN route. Routes carry the originating VTEP as next hop; with a route reflector, it reflects them unchanged, so the leaves need routes to each other's loopbacks, not only to the spine. Advertise the loopbacks (and, if the leaves only peer with the spine, the link subnets) in the underlay (`redistribute connected` with a prefix list, OSPF, IS-IS), or set `next-hop-self` where it applies. Without it, EVPN routes are received and listed in `/bgp/state/evpn/route`, but nothing is forwarded: check `vrfexec default ping <remote VTEP>`.
 - **MTU.** VXLAN over IPv4 adds 50 bytes. `vx<vni>`/`br<vni>` default to 1450 (`tarvos-vxlan` `mtu`), which fits a 1500-byte underlay; with a jumbo underlay, set `mtu` to the underlay MTU minus 50. Give the hosts the same MTU: a bridged frame larger than the overlay MTU is dropped without any error (routed packets get an ICMP "fragmentation needed").
-- **Type-2 MAC+IP routes.** A leaf learns a host's IP address from the ARP/ND exchanges of its anycast gateway. Until a host talks to its gateway (or is resolved by it), it is advertised as a MAC-only type-2 route; two hosts that only talk to each other at layer 2 never produce MAC+IP routes. This is FRR's behaviour, and the NETCONF state reports it as is.
+- **Type-2 MAC+IP routes.** A leaf learns a host's IP address from the ARP/ND exchanges of its anycast gateway. Until a host talks to its gateway (or is resolved by it), it is advertised as a MAC-only type-2 route; two hosts that only talk to each other at layer 2 never produce MAC+IP routes. This is FRR's behaviour, and the NETCONF state reports it as is. Once known, a host stays known while it answers: Tarvos probes every STALE local neighbor of the L2 VNIs (`NEIGH_REFRESH_ENABLED`). Without that, an idle host ages out, its IP is withdrawn, and a remote leaf cannot resolve it any more (its ARP reply is addressed to the anycast gateway MAC, which the host's own leaf consumes), so the host becomes unreachable from the other leaves until it talks again.
 
 ## Operational state over NETCONF
 
@@ -397,6 +398,12 @@ What an operator can rely on (each point is a test of the campaigns):
 - The TACACS+ secret is written only to root-only (`0600`) PAM files and is never logged. Over NETCONF, `admin` can write it but not read it back.
 - NETCONF users are authenticated through PAM under their own name, so TACACS+ users need no per-user setup in Tarvos and appear by name in NETCONF logs. Access is controlled by NACM: `admin` has full access, TACACS+ users get `TACACS_NETCONF_ACCESS` (read-only by default; set `rw` to let them configure).
 - Both SSH `password` (ncclient, Ansible `netconf`) and `keyboard-interactive` (OpenSSH `ssh -s`, `netopeer2-cli`) go through the same PAM stack, so TACACS+ users work with either. Upstream libnetconf2 checks `password` against the local password file only; the image carries a small patch (`docker/patches/libnetconf2-password-pam.patch`) to route it through PAM.
+
+## Upgrading from 2.1.2
+
+2.1.3 keeps the hosts of the L2 VNIs known. Existing `.env` files and NETCONF configurations keep working. Behaviour that changes:
+
+- **Neighbor refresh (new, on by default):** every 10 s (`NETDEV_RECONCILE_INTERVAL`), each STALE local neighbor of a bridge with an anycast gateway is set to PROBE, so the kernel sends it one unicast ARP/ND request from the gateway. An idle host stays REACHABLE and keeps its MAC+IP type-2 route; a host that left fails its probe and ages out as before. Remote entries (installed by zebra) are never touched. Before, an idle host aged out of the table, FRR withdrew its IP, and remote leaves could not reach it until it talked again. `NEIGH_REFRESH_ENABLED=no` restores the old behaviour.
 
 ## Upgrading from 2.1.1
 
