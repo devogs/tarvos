@@ -13,6 +13,14 @@ after the container started) are picked up.
 The state of each configured VRF and VNI (device status, members, remote VTEPs) is
 served as operational data, read from the kernel on every request.
 
+The local hosts of the L2 VNIs are kept known (NEIGH_REFRESH_ENABLED, on by default): every
+RECONCILE_INTERVAL seconds, each STALE neighbor of a bridge that carries an anycast gateway is
+set to the PROBE state, so the kernel sends it one unicast ARP/ND request from the gateway. A
+host that answers stays REACHABLE; one that left fails and ages out as usual. Without it an
+idle host ages out of the table, FRR withdraws its IP (MAC-only type-2 route), and a remote
+leaf cannot resolve it again: its ARP reply goes to the anycast gateway MAC, which the local
+leaf owns. Remote entries (``extern_learn``, installed by zebra) are never touched.
+
 Every Tarvos VRF table also gets an ``unreachable default`` route at the highest metric
 (protocol ``tarvos``, 250): without it, a lookup that misses in a tenant table falls
 through to the main table and to the management VRF fallback rule (mgmt_vrf.sh), so
@@ -44,6 +52,11 @@ ALIAS = "tarvos"
 DEFAULT_PORT = 4789
 DEFAULT_MTU = 1450  # tarvos-vxlan default: 1500-byte underlay minus 50 of VXLAN/IPv4
 RECONCILE_INTERVAL = float(os.environ.get("NETDEV_RECONCILE_INTERVAL", "10"))
+NEIGH_REFRESH = os.environ.get("NEIGH_REFRESH_ENABLED", "yes").strip().lower() in (
+    "yes", "true", "1", "on",
+)
+# Neighbor states a refresh never touches: static, unresolved or already being resolved
+NEIGH_KEEP_STATES = frozenset({"PERMANENT", "NOARP", "FAILED", "INCOMPLETE", "PROBE"})
 IN_FLIGHT_TIMEOUT = 120.0
 KIND_ORDER = {"vxlan": 0, "bridge": 1, "vrf": 2}  # deletion order; creation is reversed
 # VRF isolation route: rt_protos number owned by Tarvos, metric as in the kernel VRF docs.
@@ -395,6 +408,50 @@ def fdb_state() -> list[dict[str, Any]]:
     return json.loads(result.stdout or "[]")
 
 
+def refresh_bridges(desired: Desired) -> list[str]:
+    """Bridges whose local hosts are refreshed: the L2 VNI bridges with an anycast gateway
+    address (the source of the probes; an L3 VNI bridge has no host)."""
+    return sorted(d.name for d in desired.devices.values() if d.kind == "bridge" and d.addresses)
+
+
+def refresh_plan(
+    bridges: list[str], neighbors: dict[str, list[dict[str, Any]]]
+) -> list[list[str]]:
+    """``ip neigh change ... nud probe`` for every local STALE host of the bridges.
+
+    Args:
+        bridges: Bridges to refresh (``refresh_bridges``).
+        neighbors: ``ip -j neigh show dev <bridge>`` (IPv4 and IPv6) per bridge.
+    """
+    commands: list[list[str]] = []
+    for bridge in bridges:
+        for entry in neighbors.get(bridge) or []:
+            states = set(entry.get("state") or [])
+            remote = "extern_learn" in entry or entry.get("protocol") == "zebra"
+            if remote or not entry.get("lladdr") or states & NEIGH_KEEP_STATES:
+                continue
+            if "STALE" not in states:
+                continue
+            family = "-6" if ":" in entry["dst"] else "-4"
+            commands.append([
+                "ip", family, "neigh", "change", entry["dst"], "dev", bridge,
+                "lladdr", entry["lladdr"], "nud", "probe",
+            ])  # fmt: skip
+    return commands
+
+
+def neighbor_state(bridges: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """IPv4 and IPv6 neighbors of each bridge (a bridge that vanished meanwhile is skipped)."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    for bridge in bridges:
+        try:
+            out[bridge] = _ip_json("-4", "neigh", "show", "dev", bridge)
+            out[bridge] += _ip_json("-6", "neigh", "show", "dev", bridge)
+        except NetdevError:
+            continue
+    return out
+
+
 def batches(commands: list[list[str]]) -> list[tuple[str, list[list[str]]]]:
     """Consecutive commands of the same tool (ip, bridge), order kept: one process per
     batch ("ip -batch -") instead of one per command (100 VNIs are 400+ commands)."""
@@ -599,6 +656,23 @@ class Agent:
             if changes:
                 log(f"applied {len(changes)} kernel change(s)")
 
+    def refresh_neighbors(self) -> None:
+        """Probe the local STALE hosts of the L2 VNIs (see the module docstring)."""
+        with self.lock:
+            conf = self.data.get("tarvos-vxlan") or {}
+            try:
+                desired = desired_state(
+                    self.data.get("tarvos-vrf") or {}, conf, self.reserved_vrf, self.reserved_table
+                )
+            except NetdevError:
+                return  # an invalid configuration is reported by the reconciliation
+        bridges = refresh_bridges(desired)
+        for command in refresh_plan(bridges, neighbor_state(bridges)):
+            try:
+                execute([command])
+            except NetdevError:
+                pass  # the entry changed state meanwhile (resolved, deleted): nothing to refresh
+
     def on_vrf_state(self, _xpath: str, _private_data: Any) -> dict[str, Any] | None:
         try:
             return vrf_state(self.data.get("tarvos-vrf") or {}, _ip_json("-d", "link", "show"))
@@ -679,6 +753,11 @@ def main() -> int:
                     agent.reconcile(running, quiet=True)
             except Exception as exc:  # keep the loop alive
                 log(f"ERROR: periodic reconciliation: {exc}")
+            if NEIGH_REFRESH:
+                try:
+                    agent.refresh_neighbors()
+                except Exception as exc:  # keep the loop alive
+                    log(f"ERROR: neighbor refresh: {exc}")
     return 0
 
 

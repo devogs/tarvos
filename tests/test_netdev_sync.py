@@ -286,3 +286,39 @@ def test_management_interface_cannot_be_a_member_port():
     with pytest.raises(NetdevError, match="management interface"):
         desired_state(vrfs, {}, "mgmt", 1001, frozenset({"eth0", "mgmt"}))
     assert desired_state(vrfs, {}, "mgmt", 1001).members == {"eth0": "RED"}
+
+
+# --- neighbor refresh of the local hosts of the L2 VNIs ---
+from netdev_sync import refresh_bridges, refresh_plan  # noqa: E402
+
+LOCAL_STALE = {"dst": "10.1.100.11", "lladdr": "aa:c1:ab:00:00:01", "state": ["STALE"]}
+REMOTE = {
+    "dst": "10.1.100.12", "lladdr": "aa:c1:ab:00:00:02", "extern_learn": None,
+    "state": ["NOARP"], "protocol": "zebra",
+}  # fmt: skip
+
+
+def test_refresh_bridges_are_the_l2vni_bridges_with_a_gateway():
+    # br5000 is the L3 VNI bridge (no gateway address): nothing to probe from
+    assert refresh_bridges(_desired()) == ["br100"]
+
+
+def test_refresh_plan_probes_only_local_stale_hosts():
+    neighbors = {"br100": [
+        LOCAL_STALE,
+        REMOTE,
+        {"dst": "10.1.100.13", "lladdr": "aa:c1:ab:00:00:03", "state": ["REACHABLE"]},
+        {"dst": "10.1.100.14", "state": ["FAILED"]},
+        {"dst": "10.1.100.15", "lladdr": "aa:c1:ab:00:00:05", "state": ["PERMANENT"]},
+        {"dst": "fe80::a8c1:abff:fe00:6", "lladdr": "aa:c1:ab:00:00:06", "state": ["STALE"]},
+    ]}
+    assert refresh_plan(["br100"], neighbors) == [
+        ["ip", "-4", "neigh", "change", "10.1.100.11", "dev", "br100",
+         "lladdr", "aa:c1:ab:00:00:01", "nud", "probe"],
+        ["ip", "-6", "neigh", "change", "fe80::a8c1:abff:fe00:6", "dev", "br100",
+         "lladdr", "aa:c1:ab:00:00:06", "nud", "probe"],
+    ]  # fmt: skip
+
+
+def test_refresh_plan_ignores_unknown_bridges():
+    assert refresh_plan(["br100"], {"br200": [LOCAL_STALE]}) == []
