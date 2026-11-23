@@ -67,7 +67,9 @@ def render(settings: SyslogSettings) -> str:
             f'target="{server}"',
             f'port="{settings.port}"',
             f'protocol="{settings.protocol}"',
-            'template="TarvosFmt"',
+            # RFC 5424 with the PRI (facility, severity): what a collector parses.
+            # TarvosFmt has no PRI: it is for the local stdout stream only.
+            'template="RSYSLOG_SyslogProtocol23Format"',
         ]
         if settings.protocol == "tcp":
             forward += [
