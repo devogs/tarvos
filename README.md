@@ -59,7 +59,7 @@ The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin
 |---|---|
 | `ADMIN_PASSWORD` | Password of the local `admin` account (default `admin`, **change it**) |
 | `TACACS_SERVER`, `TACACS_SECRET`, `TACACS_TIMEOUT` | TACACS+ servers (ordered, failover), shared secret |
-| `SYSLOG_SERVER`, `SYSLOG_PORT`, `SYSLOG_PROTOCOL`, `SYSLOG_MIN_SEVERITY` | Optional remote syslog forwarding, RFC 5424 with the PRI (logs always go to stdout too, in a short readable format) |
+| `SYSLOG_SERVER`, `SYSLOG_PORT`, `SYSLOG_PROTOCOL`, `SYSLOG_MIN_SEVERITY`, `SYSLOG_STDOUT` | Optional remote syslog forwarding, RFC 5424 with the PRI. Logs also go to stdout (`docker logs`) in a short readable format, unless stdout is a terminal: `SYSLOG_STDOUT` is `auto` (default, skip the stdout stream when stdout is a terminal), `yes` (always) or `no` (never) |
 | `MGMT_VRF_ENABLED`, `MGMT_VRF_NAME`, `MGMT_VRF_TABLE`, `MGMT_INTERFACE` | Management VRF (default: `eth0` in VRF `mgmt`) |
 | `TACACS_NETCONF_ACCESS` | NETCONF rights of TACACS+ users: `ro` (default), `rw` or `none` |
 | `FRR_DAEMONS` | FRR daemons to start, e.g. `bgpd`, `bgpd,bfdd` or `[bgpd, ospfd]` (names: bgpd, ospfd, ospf6d, ripd, ripngd, isisd, pimd, pim6d, ldpd, nhrpd, eigrpd, babeld, sharpd, pbrd, bfdd, fabricd, vrrpd, pathd). mgmtd, zebra and staticd always run. NETCONF configuration for a daemon that is not running is refused |
@@ -398,6 +398,12 @@ What an operator can rely on (each point is a test of the campaigns):
 - The TACACS+ secret is written only to root-only (`0600`) PAM files and is never logged. Over NETCONF, `admin` can write it but not read it back.
 - NETCONF users are authenticated through PAM under their own name, so TACACS+ users need no per-user setup in Tarvos and appear by name in NETCONF logs. Access is controlled by NACM: `admin` has full access, TACACS+ users get `TACACS_NETCONF_ACCESS` (read-only by default; set `rw` to let them configure).
 - Both SSH `password` (ncclient, Ansible `netconf`) and `keyboard-interactive` (OpenSSH `ssh -s`, `netopeer2-cli`) go through the same PAM stack, so TACACS+ users work with either. Upstream libnetconf2 checks `password` against the local password file only; the image carries a small patch (`docker/patches/libnetconf2-password-pam.patch`) to route it through PAM.
+
+## Upgrading from 2.1.4
+
+2.1.5 stops a log storm on hosts that confine rsyslogd with AppArmor. Existing `.env` files and NETCONF configurations keep working. Behaviour that changes:
+
+- **No syslog stream on stdout when the container has a terminal** (new `SYSLOG_STDOUT=auto`, the default): containerlab starts containers with a TTY, `/dev/stdout` is then `/dev/pts/0`, and the AppArmor profile `rsyslogd` denies opening it. rsyslogd suspended and resumed its stdout action in a loop, about 2,520 events per hour per node (SHD-27). Without a terminal (`docker run -d`, compose) the stream is unchanged. Remote forwarding is unchanged. On a host whose AppArmor allows `/dev/pts`, set `SYSLOG_STDOUT=yes` to keep the stream on the terminal; `no` disables it everywhere.
 
 ## Upgrading from 2.1.3
 

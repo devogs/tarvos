@@ -3,6 +3,8 @@
 
 All local syslog traffic (/dev/log) is written to stdout (12-factor: logs as event
 streams) and, when ``SYSLOG_SERVER`` is set, also forwarded to the remote collectors.
+``SYSLOG_STDOUT`` (auto, yes, no) controls the stdout stream: ``auto`` skips it when
+stdout is a terminal, where /dev/stdout is a pty that an AppArmor profile may deny.
 Server addresses are validated with ``ipaddress`` before being rendered.
 """
 
@@ -10,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,11 +33,28 @@ class SyslogSettings:
     port: int
     protocol: str
     severity: str
+    stdout: bool = True
 
 
-def load_settings(env: dict[str, str]) -> SyslogSettings:
-    """Build settings; on invalid input log it and fall back to stdout-only logging."""
+def stdout_is_tty() -> bool:
+    return os.isatty(1)
+
+
+def _stdout_enabled(mode: str, isatty: Callable[[], bool]) -> bool:
+    return mode == "yes" or (mode == "auto" and not isatty())
+
+
+def load_settings(
+    env: dict[str, str], isatty: Callable[[], bool] = stdout_is_tty
+) -> SyslogSettings:
+    """Build settings; on invalid input log it and fall back to local-only logging.
+
+    ``isatty`` tells whether stdout is a terminal (injectable for tests).
+    """
     try:
+        stdout_mode = parse_choice(
+            "SYSLOG_STDOUT", env.get("SYSLOG_STDOUT"), "auto", ("auto", "yes", "no")
+        )
         servers = parse_ip_list(env.get("SYSLOG_SERVER"), "SYSLOG_SERVER", MAX_SERVERS)
         port = parse_int("SYSLOG_PORT", env.get("SYSLOG_PORT"), 514, 1, 65535)
         protocol = parse_choice(
@@ -45,8 +65,10 @@ def load_settings(env: dict[str, str]) -> SyslogSettings:
         )
     except ConfigError as exc:
         log(f"ERROR: {exc}; remote forwarding disabled")
-        return SyslogSettings((), 514, "udp", "info")
-    return SyslogSettings(tuple(servers), port, protocol, severity)
+        return SyslogSettings((), 514, "udp", "info", _stdout_enabled("auto", isatty))
+    return SyslogSettings(
+        tuple(servers), port, protocol, severity, _stdout_enabled(stdout_mode, isatty)
+    )
 
 
 def render(settings: SyslogSettings) -> str:
@@ -57,10 +79,13 @@ def render(settings: SyslogSettings) -> str:
         'template(name="TarvosFmt" type="string" '
         'string="%timestamp:::date-rfc3339% %HOSTNAME% '
         '%syslogtag%%msg:::sp-if-no-1st-sp%%msg%\\n")',
-        "",
-        "# Local event stream (container stdout)",
-        '*.* action(type="omfile" file="/dev/stdout" template="TarvosFmt")',
     ]
+    if settings.stdout:
+        lines += [
+            "",
+            "# Local event stream (container stdout)",
+            '*.* action(type="omfile" file="/dev/stdout" template="TarvosFmt")',
+        ]
     for server in settings.servers:
         forward = [
             'type="omfwd"',
@@ -97,13 +122,15 @@ def main() -> int:
     except OSError as exc:
         log(f"FATAL: {exc}")
         return 1
+    stream = "enabled" if settings.stdout else "disabled (terminal or SYSLOG_STDOUT=no)"
+    log(f"stdout stream: {stream}")
     if settings.servers:
         log(
             f"forwarding >= {settings.severity} to {', '.join(settings.servers)}"
             f":{settings.port}/{settings.protocol}"
         )
     else:
-        log("SYSLOG_SERVER not set; logging to stdout only")
+        log("SYSLOG_SERVER not set; no remote forwarding")
     return 0
 
 
