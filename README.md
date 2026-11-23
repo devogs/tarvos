@@ -59,13 +59,13 @@ The `tarvos-*` YANG modules are built into the image (`/opt/tarvos/yangs-builtin
 |---|---|
 | `ADMIN_PASSWORD` | Password of the local `admin` account (default `admin`, **change it**) |
 | `TACACS_SERVER`, `TACACS_SECRET`, `TACACS_TIMEOUT` | TACACS+ servers (ordered, failover), shared secret |
-| `SYSLOG_SERVER`, `SYSLOG_PORT`, `SYSLOG_PROTOCOL`, `SYSLOG_MIN_SEVERITY` | Optional remote syslog forwarding (logs always go to stdout too) |
+| `SYSLOG_SERVER`, `SYSLOG_PORT`, `SYSLOG_PROTOCOL`, `SYSLOG_MIN_SEVERITY` | Optional remote syslog forwarding, RFC 5424 with the PRI (logs always go to stdout too, in a short readable format) |
 | `MGMT_VRF_ENABLED`, `MGMT_VRF_NAME`, `MGMT_VRF_TABLE`, `MGMT_INTERFACE` | Management VRF (default: `eth0` in VRF `mgmt`) |
 | `TACACS_NETCONF_ACCESS` | NETCONF rights of TACACS+ users: `ro` (default), `rw` or `none` |
 | `FRR_DAEMONS` | FRR daemons to start, e.g. `bgpd`, `bgpd,bfdd` or `[bgpd, ospfd]` (names: bgpd, ospfd, ospf6d, ripd, ripngd, isisd, pimd, pim6d, ldpd, nhrpd, eigrpd, babeld, sharpd, pbrd, bfdd, fabricd, vrrpd, pathd). mgmtd, zebra and staticd always run. NETCONF configuration for a daemon that is not running is refused |
 | `LLDP_ENABLED`, `LLDP_INTERFACES`, `LLDP_TX_INTERVAL`, `LLDP_TX_HOLD`, `LLDP_SYSTEM_NAME`, `LLDP_SYSTEM_DESCRIPTION` | LLDP neighbour discovery (lldpd, on by default on every interface; `LLDP_INTERFACES` is an lldpd pattern such as `eth*,!eth0`). Inspect with `lldpcli show neighbors` or over NETCONF |
 | `TELEMETRY_ENABLED`, `TELEMETRY_EXCLUDE`, `TELEMETRY_SYNC_INTERVAL`, `TELEMETRY_LISTEN_VRF` | eBPF telemetry agent, see [eBPF telemetry](#ebpf-telemetry) |
-| `CONSOLE_SHELL` | `yes` (default): with a TTY (GNS3 telnet console, `docker run -it`), a login shell as `admin` is offered on the console; `no` keeps the console log-only |
+| `CONSOLE_SHELL`, `CONSOLE_SHELL_MAX_FAILURES` | `yes` (default): with a TTY (GNS3 telnet console, `docker run -it`), a login shell as `admin` is offered on the console; `no` keeps the console log-only. When the TTY cannot become a controlling terminal (containerlab), the shell is given up after `CONSOLE_SHELL_MAX_FAILURES` (3) quick failures in a row and the console stays log-only |
 | `PROMETHEUS_ENABLED`, `PROMETHEUS_PORT`, `PROMETHEUS_ROUTING_METRICS`, `PROMETHEUS_KERNEL_METRICS`, `PROMETHEUS_STATE_CACHE` | `/metrics` endpoint and which series it serves, see [Prometheus](#prometheus) |
 | `GNMI_ENABLED`, `GNMI_PORT`, `GNMI_TLS`, `GNMI_TLS_CERT`, `GNMI_TLS_KEY` | gNMI server, see [gNMI](#gnmi) |
 | `NEIGH_REFRESH_ENABLED` | `yes` (default): keep the local hosts of every L2 VNI known by probing each STALE neighbor (one unicast ARP/ND request from the anycast gateway), see [Example: EVPN leaf](#example-evpn-leaf); `no` lets idle hosts age out |
@@ -398,6 +398,13 @@ What an operator can rely on (each point is a test of the campaigns):
 - The TACACS+ secret is written only to root-only (`0600`) PAM files and is never logged. Over NETCONF, `admin` can write it but not read it back.
 - NETCONF users are authenticated through PAM under their own name, so TACACS+ users need no per-user setup in Tarvos and appear by name in NETCONF logs. Access is controlled by NACM: `admin` has full access, TACACS+ users get `TACACS_NETCONF_ACCESS` (read-only by default; set `rw` to let them configure).
 - Both SSH `password` (ncclient, Ansible `netconf`) and `keyboard-interactive` (OpenSSH `ssh -s`, `netopeer2-cli`) go through the same PAM stack, so TACACS+ users work with either. Upstream libnetconf2 checks `password` against the local password file only; the image carries a small patch (`docker/patches/libnetconf2-password-pam.patch`) to route it through PAM.
+
+## Upgrading from 2.1.3
+
+2.1.4 fixes two problems found in a containerlab fabric. Existing `.env` files and NETCONF configurations keep working. Behaviour that changes:
+
+- **Remote syslog is RFC 5424** (`RSYSLOG_SyslogProtocol23Format`), with the PRI: collectors now get the facility and the severity. Before, the remote servers received the stdout format (`<time> <host> <tag>: <msg>`, no PRI), which parsers such as Telegraf's syslog grok rejected or stored without a level. The stdout stream keeps the short readable format.
+- **Console shell gives up when it cannot start**: a TTY that cannot become a controlling terminal (containerlab gives one) made `setsid` fail every second forever, and each attempt made rsyslog suspend and resume its stdout action, about 40 log lines a minute forwarded to the collectors. After `CONSOLE_SHELL_MAX_FAILURES` (3) quick failures in a row the console stays log-only, with one log line saying why.
 
 ## Upgrading from 2.1.2
 
