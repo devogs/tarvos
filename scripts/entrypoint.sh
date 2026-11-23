@@ -195,13 +195,29 @@ log "Tarvos is up"
 # Console shell: GNS3's telnet console (and docker run -it / docker attach) is attached to
 # this process, which otherwise only prints logs. With a TTY on stdin, offer a login
 # shell as "admin" there, respawned when it exits. CONSOLE_SHELL=no disables it.
+# Some runtimes give a TTY that cannot become a controlling terminal (containerlab: setsid -c
+# fails with "Inappropriate ioctl for device"): after CONSOLE_SHELL_MAX_FAILURES quick failures
+# in a row the console stays log-only, instead of retrying every second forever (each attempt
+# disturbed the console and made rsyslog suspend its stdout action, a log flood).
 if [ -t 0 ]; then
     case "${CONSOLE_SHELL:-yes}" in
         no | false | 0) ;;
         *)
             (
+                failures=0
                 while [ "${shutting_down}" -eq 0 ]; do
-                    setsid -c su -l admin || sleep 1
+                    started=${SECONDS}
+                    if setsid -c su -l admin; then
+                        failures=0
+                        continue
+                    fi
+                    # a session that lasted is a logout, not a failure to start
+                    if [ $((SECONDS - started)) -lt 5 ]; then failures=$((failures + 1)); else failures=0; fi
+                    if [ "${failures}" -ge "${CONSOLE_SHELL_MAX_FAILURES:-3}" ]; then
+                        log "console shell unavailable (the TTY cannot become a controlling terminal); console stays log-only (CONSOLE_SHELL=no silences this)"
+                        break
+                    fi
+                    sleep 1
                 done
             ) &
             ;;
